@@ -14,10 +14,24 @@ This backend now supports the full core demo flow:
 
 ## Run
 
-From repository root:
+Run the server on **Machine 1** from repository root.
+
+Linux/macOS:
 
 ```bash
 python3 -m backend.server --host 0.0.0.0 --port 5000
+```
+
+Windows (PowerShell):
+
+```powershell
+py -m backend.server --host 0.0.0.0 --port 5000
+```
+
+Windows (CMD):
+
+```cmd
+py -m backend.server --host 0.0.0.0 --port 5000
 ```
 
 ## Core message flow

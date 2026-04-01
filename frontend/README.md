@@ -20,14 +20,46 @@ This frontend follows the tutorial coding style:
 - Game over: `L` return to lobby
 
 ## Run
-From repository root:
+Use two machines for the demo:
+- **Machine 1**: backend server
+- **Machine 2**: frontend client
+
+Machine 1 (server) from repository root.
+
+Linux/macOS:
+
+```bash
+python3 -m backend.server --host 0.0.0.0 --port 5000
+```
+
+Windows (PowerShell):
+
+```powershell
+py -m backend.server --host 0.0.0.0 --port 5000
+```
+
+Windows (CMD):
+
+```cmd
+py -m backend.server --host 0.0.0.0 --port 5000
+```
+
+Machine 2 (client) from repository root.
+
+Linux/macOS:
 
 ```bash
 python3 -m frontend.client
 ```
 
-Start backend first:
+Windows (PowerShell):
 
-```bash
-python3 -m backend.server --host 0.0.0.0 --port 5000
+```powershell
+py -m frontend.client
+```
+
+Windows (CMD):
+
+```cmd
+py -m frontend.client
 ```
