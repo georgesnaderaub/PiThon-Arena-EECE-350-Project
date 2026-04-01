@@ -1,27 +1,19 @@
-"""Data models for server connection and lobby state."""
-
-from __future__ import annotations
-
-from dataclasses import dataclass, field
-import socket
-from typing import Optional
+"""Data containers for connection-layer state."""
 
 
-@dataclass
-class UserSession:
-    """Represents one connected client session."""
-
-    socket: socket.socket
-    address: tuple[str, int]
-    username: Optional[str] = None
-    role: str = "player"  # player | spectator
-    read_buffer: bytes = b""
+def create_connection_state():
+    return {
+        "online_users": {},
+        "waiting_players": [],
+        "spectators": set(),
+    }
 
 
-@dataclass
-class ConnectionState:
-    """In-memory state for currently connected clients."""
-
-    online_users: dict[str, UserSession] = field(default_factory=dict)
-    waiting_players: list[str] = field(default_factory=list)
-    spectators: set[str] = field(default_factory=set)
+def create_user_session(connection, address):
+    return {
+        "socket": connection,
+        "address": address,
+        "username": None,
+        "role": "player",
+        "read_buffer": b"",
+    }

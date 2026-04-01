@@ -2,7 +2,7 @@
 
 ## Project Context
 This repository implements a two-player snake arena game for EECE 350.
-Use the plan in `ΠThon Arena Chat Plan.txt` as the source of truth for architecture and scope.
+Use the plan in `ΠThon Arena Chat Plan.txt` as the source of truth for architecture and scope, and 'EECE350_project_Spring2025.pdf' as the original reference if something is unclear.
 
 ## System Design (Required)
 - Use an authoritative centralized game server.
@@ -70,9 +70,22 @@ Primary recommendation: **Replay + match timeline** based on server snapshots/ev
 9. Creative feature.
 10. Fault handling and polish.
 
+## Code Format Style (Match Tutorial Reference)
+- Follow the same practical style used in `Tutorial Reference/*.py` files.
+- Keep modules script-like and easy to read (top-level constants + helper functions + main loop).
+- Use `UPPER_CASE` for configuration constants (for example `SERVER_IP`, `SERVER_PORT`, colors, dimensions).
+- Use `snake_case` for variable and function names.
+- Prefer simple function signatures without heavy typing syntax unless clearly needed.
+- Keep comments short and instructional, like tutorial comments that explain intent of each block.
+- Keep socket/JSON/Pygame code explicit rather than overly abstract.
+- Prefer straightforward control flow (`while` loops, direct conditionals) over deep indirection.
+- Keep message encoding/decoding readable and beginner-friendly.
+
 ## Agent Working Rules
 - Preserve authoritative server ownership of game state.
 - Do not introduce client-side winner/game-truth decisions.
 - Keep protocol changes explicit and documented.
 - Prefer small, testable increments aligned to delivery priority.
 - If requirements conflict, prioritize centralized game correctness over visual polish.
+- After every important feature addition, add or update tests in `unit_tests.ipynb` in the same task.
+- After every important change, run `unit_tests.ipynb` and consider the feature complete only if all notebook tests pass.
