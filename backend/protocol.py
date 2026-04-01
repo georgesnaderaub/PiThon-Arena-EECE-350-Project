@@ -2,11 +2,11 @@
 
 import json
 
-
+#custom exception for invalid protocol messages.
 class ProtocolError(Exception):
     pass
 
-
+#wraps data as JSON object {"type": ..., "payload": ...} and appends \n for framing.
 def encode_message(message_type, payload=None):
     envelope = {
         "type": message_type,
@@ -14,11 +14,14 @@ def encode_message(message_type, payload=None):
     }
     return (json.dumps(envelope, separators=(",", ":")) + "\n").encode("utf-8")
 
-
+#helper that encodes then sends one message with sendall.
 def send_message(connection, message_type, payload=None):
     connection.sendall(encode_message(message_type, payload))
 
 
+#parses one raw JSON line, validates shape 
+# (type must be non-empty string, payload must be object), 
+#returns normalized dict.
 def decode_message(line):
     try:
         message = json.loads(line.decode("utf-8"))

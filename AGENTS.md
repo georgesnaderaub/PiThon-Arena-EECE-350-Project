@@ -75,6 +75,7 @@ Primary recommendation: **Replay + match timeline** based on server snapshots/ev
 - Keep modules script-like and easy to read (top-level constants + helper functions + main loop).
 - Use `UPPER_CASE` for configuration constants (for example `SERVER_IP`, `SERVER_PORT`, colors, dimensions).
 - Use `snake_case` for variable and function names.
+- Add exactly one single-line comment directly above each new function to explain what it does.
 - Prefer simple function signatures without heavy typing syntax unless clearly needed.
 - Keep comments short and instructional, like tutorial comments that explain intent of each block.
 - Keep socket/JSON/Pygame code explicit rather than overly abstract.
@@ -89,3 +90,4 @@ Primary recommendation: **Replay + match timeline** based on server snapshots/ev
 - If requirements conflict, prioritize centralized game correctness over visual polish.
 - After every important feature addition, add or update tests in `unit_tests.ipynb` in the same task.
 - After every important change, run `unit_tests.ipynb` and consider the feature complete only if all notebook tests pass.
+- For all future functions, always include one one-line explanatory comment directly above the function definition.
