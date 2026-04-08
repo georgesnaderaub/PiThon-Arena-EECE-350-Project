@@ -10,7 +10,7 @@ from .net_utils import decode_message, encode_message
 from .ui import UIButton, STATE_PRESSED
 
 
-WIDTH = 1000
+WIDTH = 1300
 HEIGHT = 700
 FPS = 60
 
@@ -20,6 +20,8 @@ BOARD_TOP_SPACE = 80
 BOARD_BOTTOM_SPACE = 40
 HEALTH_BAR_WIDTH = 300
 HEALTH_BAR_HEIGHT = 26
+CHAT_PANEL_WIDTH = 320
+CHAT_MAX_VISIBLE = 14
 BOARD_BG = (20, 24, 30)
 WHITE = (240, 240, 240)
 BLACK = (0, 0, 0)
@@ -39,6 +41,7 @@ SCREEN_GAME_OVER = "GAME_OVER"
 
 BUTTON_WIDTH = 260
 BUTTON_HEIGHT = 56
+CHEER_OPTIONS = ["gg", "go blue", "go green", "ya sayi2", "mal3abak"]
 
 
 #returns initial mutable client state used by the pygame loop.
@@ -57,7 +60,9 @@ def create_client_state():
         "username": "",
         "self_name": None,
         "online_users": [],
+        "active_matches": [],
         "selected_user_index": 0,
+        "selected_match_index": 0,
         "pending_challenger": None,
         "lobby_info": "Press C to challenge selected user",
         "input_focus": "ip",
@@ -305,6 +310,11 @@ def handle_server_message(state, message):
             state["online_users"] = users
             if state["selected_user_index"] >= len(users):
                 state["selected_user_index"] = 0
+        active_matches = payload.get("active_matches", [])
+        if isinstance(active_matches, list):
+            state["active_matches"] = active_matches
+            if state["selected_match_index"] >= len(active_matches):
+                state["selected_match_index"] = 0
         return
 
     if message_type == "CHALLENGE_RECEIVED":
@@ -435,12 +445,23 @@ def get_selected_lobby_user(state):
     return users[index]
 
 
+#returns selected active match object from lobby metadata list.
+def get_selected_active_match(state):
+    matches = state.get("active_matches", [])
+    if not matches:
+        return None
+    index = max(0, min(state["selected_match_index"], len(matches) - 1))
+    state["selected_match_index"] = index
+    return matches[index]
+
+
 #handles lobby shortcuts for challenge, accept, wait, and watch.
 def handle_lobby_screen_event(state, event):
     if event.type != pygame.KEYDOWN:
         return
 
     users = [name for name in state["online_users"] if name != state["self_name"]]
+    matches = state.get("active_matches", [])
 
     if event.key == pygame.K_UP and users:
         state["selected_user_index"] = (state["selected_user_index"] - 1) % len(users)
@@ -448,6 +469,14 @@ def handle_lobby_screen_event(state, event):
 
     if event.key == pygame.K_DOWN and users:
         state["selected_user_index"] = (state["selected_user_index"] + 1) % len(users)
+        return
+
+    if event.key == pygame.K_LEFT and matches:
+        state["selected_match_index"] = (state["selected_match_index"] - 1) % len(matches)
+        return
+
+    if event.key == pygame.K_RIGHT and matches:
+        state["selected_match_index"] = (state["selected_match_index"] + 1) % len(matches)
         return
 
     if event.key == pygame.K_c:
@@ -476,7 +505,11 @@ def handle_lobby_screen_event(state, event):
 
     if event.key == pygame.K_v:
         press_button_feedback(state, "watch")
-        send_to_server(state, "WATCH_MATCH", {})
+        selected_match = get_selected_active_match(state)
+        if selected_match is None:
+            state["lobby_info"] = "No active match to watch"
+            return
+        send_to_server(state, "WATCH_MATCH", {"match_id": selected_match.get("id")})
 
 
 #handles gameplay controls and non-gameplay shortcuts.
@@ -489,6 +522,9 @@ def handle_game_screen_event(state, event):
         return
 
     if state["is_spectator"]:
+        if event.unicode in {"1", "2", "3", "4", "5"}:
+            index = int(event.unicode) - 1
+            send_to_server(state, "CHEER", {"text": CHEER_OPTIONS[index]})
         return
 
     if event.key == pygame.K_UP:
@@ -552,7 +588,11 @@ def run_button_action(state, action_name):
         return
 
     if state["screen"] == SCREEN_LOBBY and action_name == "watch":
-        send_to_server(state, "WATCH_MATCH", {})
+        selected_match = get_selected_active_match(state)
+        if selected_match is None:
+            state["lobby_info"] = "No active match to watch"
+            return
+        send_to_server(state, "WATCH_MATCH", {"match_id": selected_match.get("id")})
         return
 
     if state["screen"] == SCREEN_GAME_OVER and action_name == "to_lobby":
@@ -651,6 +691,11 @@ def draw_lobby_screen(screen, font, big_font, state):
     y = draw_text_line(screen, big_font, f"Lobby - {state['self_name']}", WHITE, 20, y)
     y = draw_text_line(screen, font, state["lobby_info"], YELLOW, 20, y)
 
+    in_game_players = set()
+    for match in state.get("active_matches", []):
+        for name in match.get("players", []):
+            in_game_players.add(name)
+
     users = [name for name in state["online_users"] if name != state["self_name"]]
     y += 8
     y = draw_text_line(screen, font, "Online Players:", WHITE, 20, y)
@@ -661,11 +706,25 @@ def draw_lobby_screen(screen, font, big_font, state):
         for index, user in enumerate(users):
             prefix = "> " if index == state["selected_user_index"] else "  "
             color = BLUE if index == state["selected_user_index"] else WHITE
-            y = draw_text_line(screen, font, f"{prefix}{user}", color, 20, y)
+            status = " (IN GAME)" if user in in_game_players else ""
+            y = draw_text_line(screen, font, f"{prefix}{user}{status}", color, 20, y)
+
+    y += 10
+    y = draw_text_line(screen, font, "Active Matches:", WHITE, 20, y)
+    matches = state.get("active_matches", [])
+    if not matches:
+        y = draw_text_line(screen, font, "No active match", GRAY, 20, y)
+    else:
+        for index, match in enumerate(matches):
+            players = match.get("players", [])
+            label = " vs ".join(players) if len(players) == 2 else "Unknown players"
+            prefix = "> " if index == state["selected_match_index"] else "  "
+            color = GREEN if index == state["selected_match_index"] else WHITE
+            y = draw_text_line(screen, font, f"{prefix}Match #{match.get('id', '?')}: {label}", color, 20, y)
 
     y += 10
     y = draw_text_line(screen, font, "Use buttons or keys (C/A/W/V)", GRAY, 20, y)
-    y = draw_text_line(screen, font, "Challenge / Accept / Wait / Watch", GRAY, 20, y)
+    y = draw_text_line(screen, font, "Left/Right select match to watch", GRAY, 20, y)
 
     if state["pending_challenger"]:
         draw_text_line(screen, font, f"Incoming: {state['pending_challenger']}", ORANGE, 20, y + 16)
@@ -687,12 +746,14 @@ def get_board_geometry(match):
             grid_width = 30
             grid_height = 20
 
-    board_width_pixels = WIDTH - 2 * GRID_MARGIN
+    playable_width = WIDTH - CHAT_PANEL_WIDTH - 3 * GRID_MARGIN
+    board_width_pixels = playable_width
     board_height_pixels = HEIGHT - BOARD_TOP_SPACE - BOARD_BOTTOM_SPACE
     cell_size = min(board_width_pixels // grid_width, board_height_pixels // grid_height)
     board_width = cell_size * grid_width
     board_height = cell_size * grid_height
-    board_x = (WIDTH - board_width) // 2
+    playable_x = GRID_MARGIN
+    board_x = playable_x + (playable_width - board_width) // 2
     board_y = BOARD_TOP_SPACE + (board_height_pixels - board_height) // 2
 
     return {
@@ -706,26 +767,13 @@ def get_board_geometry(match):
     }
 
 
-#returns primary and other player names for the game HUD.
-def get_hud_player_names(match, state):
-    players = match.get("players", [])
-    if len(players) < 2:
-        return None, None
-
-    self_name = state.get("self_name")
-    if self_name in players:
-        other = players[1] if players[0] == self_name else players[0]
-        return self_name, other
-
-    return players[0], players[1]
-
-
-#draws one horizontal health bar for the given player name and health value.
-def draw_health_bar(screen, font, x, y, player_name, health_value):
+#draws one horizontal health bar anchored to a top corner for one player.
+def draw_corner_health_bar(screen, font, x, y, player_name, health_value):
     health_value = max(0, min(100, int(health_value)))
-    draw_text_line(screen, font, player_name, WHITE, x, y)
+    text_surface = font.render(player_name, True, WHITE)
+    screen.blit(text_surface, (x, y))
 
-    bar_top = y + 30
+    bar_top = y + text_surface.get_height() + 6
     outer_rect = pygame.Rect(x, bar_top, HEALTH_BAR_WIDTH, HEALTH_BAR_HEIGHT)
     pygame.draw.rect(screen, DARK_GRAY, outer_rect)
     pygame.draw.rect(screen, WHITE, outer_rect, 2)
@@ -734,8 +782,39 @@ def draw_health_bar(screen, font, x, y, player_name, health_value):
     fill_rect = pygame.Rect(x + 2, bar_top + 2, fill_width, HEALTH_BAR_HEIGHT - 4)
     pygame.draw.rect(screen, GREEN, fill_rect)
 
-    draw_text_line(screen, font, f"Health: {health_value}", WHITE, x, bar_top + HEALTH_BAR_HEIGHT + 6)
-    return bar_top + HEALTH_BAR_HEIGHT + 36
+    health_surface = font.render(f"Health: {health_value}", True, WHITE)
+    screen.blit(health_surface, (x, bar_top + HEALTH_BAR_HEIGHT + 6))
+
+
+#draws the right-side chat panel with recent messages and spectator quick-chat options.
+def draw_chat_panel(screen, match, state, small_font):
+    panel_x = WIDTH - CHAT_PANEL_WIDTH - GRID_MARGIN
+    panel_y = GRID_MARGIN
+    panel_h = HEIGHT - 2 * GRID_MARGIN
+    panel_rect = pygame.Rect(panel_x, panel_y, CHAT_PANEL_WIDTH, panel_h)
+
+    pygame.draw.rect(screen, (24, 28, 36), panel_rect)
+    pygame.draw.rect(screen, DARK_GRAY, panel_rect, 2)
+
+    text_y = panel_y + 12
+    text_y = draw_text_line(screen, small_font, "Match Chat", WHITE, panel_x + 12, text_y)
+
+    cheers = match.get("cheers", [])
+    visible = cheers[-CHAT_MAX_VISIBLE:]
+    if not visible:
+        text_y = draw_text_line(screen, small_font, "No messages yet", GRAY, panel_x + 12, text_y + 4)
+    else:
+        for item in visible:
+            sender = item.get("from", "?")
+            text = item.get("text", "")
+            text_y = draw_text_line(screen, small_font, f"{sender}: {text}", WHITE, panel_x + 12, text_y + 2)
+
+    if state["is_spectator"]:
+        opt_y = panel_y + panel_h - 160
+        draw_text_line(screen, small_font, "Spectator Cheers:", YELLOW, panel_x + 12, opt_y)
+        for index, phrase in enumerate(CHEER_OPTIONS, start=1):
+            opt_y += 26
+            draw_text_line(screen, small_font, f"{index}. {phrase}", GRAY, panel_x + 12, opt_y)
 
 
 #draws the active game board from server-authoritative match state.
@@ -779,24 +858,29 @@ def draw_game_board(screen, state, font, small_font):
                 pygame.draw.rect(screen, tuple(max(20, c - 40) for c in color), rect)
 
     snakes = match.get("snakes", {})
-    primary_name, other_name = get_hud_player_names(match, state)
+    players = match.get("players", [])
+    if len(players) >= 2:
+        left_player = players[0]
+        right_player = players[1]
 
-    hud_x = GRID_MARGIN
-    hud_y = GRID_MARGIN
-    if primary_name in snakes:
-        primary_snake = snakes[primary_name]
-        hud_y = draw_health_bar(screen, small_font, hud_x, hud_y, primary_name, primary_snake.get("health", 0))
-        primary_score = int(primary_snake.get("score", 0))
-        hud_y = draw_text_line(screen, small_font, f"Score: {primary_score}", WHITE, hud_x, hud_y)
+        left_health = snakes.get(left_player, {}).get("health", 0)
+        right_health = snakes.get(right_player, {}).get("health", 0)
 
-    if other_name in snakes:
-        other_health = int(snakes[other_name].get("health", 0))
-        hud_y = draw_text_line(screen, small_font, f"{other_name} Health: {other_health}", WHITE, hud_x, hud_y + 6)
+        left_x = geo["x"]
+        right_x = geo["x"] + geo["pixel_width"] - HEALTH_BAR_WIDTH
+        top_y = GRID_MARGIN
+        draw_corner_health_bar(screen, small_font, left_x, top_y, left_player, left_health)
+        draw_corner_health_bar(screen, small_font, right_x, top_y, right_player, right_health)
 
     time_seconds = int(match.get("remaining_seconds", 0))
-    draw_text_line(screen, font, f"Time Left: {time_seconds}s", WHITE, WIDTH - 240, GRID_MARGIN)
+    time_text = f"Time Left: {time_seconds}s"
+    time_surface = font.render(time_text, True, WHITE)
+    time_x = geo["x"] + (geo["pixel_width"] - time_surface.get_width()) // 2
+    screen.blit(time_surface, (time_x, GRID_MARGIN))
 
-    controls_x = WIDTH - 280
+    draw_chat_panel(screen, match, state, small_font)
+
+    controls_x = WIDTH - CHAT_PANEL_WIDTH - GRID_MARGIN + 12
     controls_y = HEIGHT - 72
     if state["is_spectator"]:
         draw_text_line(screen, small_font, "Mode: Spectator", YELLOW, controls_x, controls_y)
@@ -808,7 +892,6 @@ def draw_game_board(screen, state, font, small_font):
 #draws the game screen including board and contextual status text.
 def draw_game_screen(screen, font, big_font, small_font, state):
     screen.fill(BOARD_BG)
-    draw_text_line(screen, big_font, "Snake Arena Match", WHITE, 20, 8)
     draw_game_board(screen, state, font, small_font)
 
     if state["error_text"]:

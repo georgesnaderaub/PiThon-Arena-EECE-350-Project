@@ -46,6 +46,8 @@ LOGGER = logging.getLogger("python_arena.server")
 RUNNING = threading.Event()
 STATE_LOCK = threading.Lock()
 STATE = create_connection_state()
+MAX_CHEER_MESSAGES = 30
+ALLOWED_CHEERS = {"gg", "go blue", "go green", "ya sayi2", "mal3abak"}
 
 
 #returns the gameplay configuration used by each match.
@@ -104,6 +106,7 @@ def build_match_state_payload(match):
         "snakes": {name: serialize_snake(snake) for name, snake in match["snakes"].items()},
         "obstacles": [serialize_pos(pos) for pos in match["obstacles"]],
         "pies": list(match["pies"]),
+        "cheers": list(match.get("cheers", [])),
     }
 
 
@@ -129,13 +132,22 @@ def send_to_users(usernames, message_type, payload):
 #sends ONLINE_USERS updates to all currently connected logged-in users.
 def broadcast_online_users():
     users = snapshot_online_users()
-
     with STATE_LOCK:
+        active_match = STATE["active_match"]
+        if active_match is None:
+            active_matches = []
+        else:
+            active_matches = [{
+                "id": active_match["id"],
+                "players": list(active_match["players"]),
+                "status": active_match["status"],
+            }]
+
         sessions = list(STATE["online_users"].values())
 
     for session in sessions:
         try:
-            send_message(session["socket"], "ONLINE_USERS", {"users": users})
+            send_message(session["socket"], "ONLINE_USERS", {"users": users, "active_matches": active_matches})
         except OSError:
             continue
 
@@ -457,6 +469,7 @@ def run_match_loop(match_id):
             with STATE_LOCK:
                 if STATE["active_match"] is not None and STATE["active_match"]["id"] == match_id:
                     STATE["active_match"] = None
+            broadcast_online_users()
             break
 
 
@@ -489,6 +502,7 @@ def create_and_start_match(player_one, player_two):
             STATE["pending_challenges"].pop(target, None)
 
     broadcast_match_start(match)
+    broadcast_online_users()
 
     thread = threading.Thread(target=run_match_loop, args=(match["id"],), daemon=True, name=f"match-{match['id']}")
     thread.start()
@@ -655,15 +669,23 @@ def handle_input(session, payload):
         match["snakes"][username]["pending_direction"] = direction
 
 
-#handles spectator request and returns current match snapshot when available.
-def handle_watch_match(session):
+#handles spectator request and returns selected running match snapshot when available.
+def handle_watch_match(session, payload):
     username = session["username"]
+    match_id = payload.get("match_id")
+    if match_id is not None and not isinstance(match_id, int):
+        send_message(session["socket"], "ERROR", {"reason": "match_id must be an integer"})
+        return
+
     set_spectator(username)
     send_message(session["socket"], "WATCH_MATCH", {"status": "subscribed"})
 
     with STATE_LOCK:
         match = STATE["active_match"]
         if match is None:
+            return
+        if match_id is not None and match["id"] != match_id:
+            send_message(session["socket"], "ERROR", {"reason": "Requested match is not available"})
             return
         payload = {
             "you": username,
@@ -673,6 +695,34 @@ def handle_watch_match(session):
         }
 
     send_message(session["socket"], "MATCH_START", payload)
+
+
+#handles chat cheer messages and appends allowed entries to active match feed.
+def handle_cheer(session, payload):
+    username = session["username"]
+    text = payload.get("text")
+    if not isinstance(text, str):
+        send_message(session["socket"], "ERROR", {"reason": "text is required"})
+        return
+
+    normalized = text.strip().lower()
+    if normalized not in ALLOWED_CHEERS:
+        send_message(session["socket"], "ERROR", {"reason": "Unsupported cheer message"})
+        return
+
+    with STATE_LOCK:
+        match = STATE["active_match"]
+        if match is None or match["status"] != "running":
+            send_message(session["socket"], "ERROR", {"reason": "No active running match"})
+            return
+
+        if username not in STATE["online_users"]:
+            send_message(session["socket"], "ERROR", {"reason": "User is not online"})
+            return
+
+        match["cheers"].append({"from": username, "text": normalized})
+        if len(match["cheers"]) > MAX_CHEER_MESSAGES:
+            match["cheers"] = match["cheers"][-MAX_CHEER_MESSAGES:]
 
 
 #routes each message type to its backend handler.
@@ -694,7 +744,7 @@ def dispatch_message(session, message):
         return
 
     if message_type == "WATCH_MATCH":
-        handle_watch_match(session)
+        handle_watch_match(session, payload)
         return
 
     if message_type == "CHALLENGE_PLAYER":
@@ -707,6 +757,10 @@ def dispatch_message(session, message):
 
     if message_type == "INPUT":
         handle_input(session, payload)
+        return
+
+    if message_type == "CHEER":
+        handle_cheer(session, payload)
         return
 
     send_message(session["socket"], "ERROR", {"reason": f"Unsupported message type '{message_type}'"})
