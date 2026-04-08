@@ -26,6 +26,7 @@ OBSTACLE_DAMAGE = 10
 SELF_DAMAGE = 20
 ENEMY_DAMAGE = 20
 HEAD_ON_DAMAGE = 20
+COLLISION_PAUSE_SECONDS = 1
 
 DIRECTION_DELTAS = {
     "UP": (0, -1),
@@ -61,6 +62,7 @@ def get_match_config():
         "self_damage": SELF_DAMAGE,
         "enemy_damage": ENEMY_DAMAGE,
         "head_on_damage": HEAD_ON_DAMAGE,
+        "collision_pause_ticks": COLLISION_PAUSE_SECONDS * TICK_RATE,
     }
 
 
@@ -84,6 +86,7 @@ def serialize_snake(snake):
         "body": [serialize_pos(pos) for pos in snake["body"]],
         "direction": snake["direction"],
         "health": snake["health"],
+        "stun_ticks_remaining": snake.get("stun_ticks_remaining", 0),
     }
 
 
@@ -176,18 +179,25 @@ def is_reverse_direction(current_direction, requested_direction):
 #applies pending directions for each snake while blocking illegal reverse turns.
 def apply_pending_directions(match):
     for snake in match["snakes"].values():
+        if snake.get("stun_ticks_remaining", 0) > 0:
+            continue
         requested = snake["pending_direction"]
         if not is_reverse_direction(snake["direction"], requested):
             snake["direction"] = requested
 
 
-#moves each snake forward by one cell and keeps its length unchanged.
+#moves each active snake forward by one cell and keeps its length unchanged.
 def move_snakes(match):
+    previous_bodies = {}
     for snake in match["snakes"].values():
+        previous_bodies[id(snake)] = list(snake["body"])
+        if snake.get("stun_ticks_remaining", 0) > 0:
+            continue
         current_head = snake["body"][0]
         new_head = get_next_position(current_head, snake["direction"])
         snake["body"].insert(0, new_head)
         snake["body"].pop()
+    return previous_bodies
 
 
 #applies pie pickup effects and respawns a new pie when one is collected.
@@ -202,50 +212,104 @@ def apply_pie_logic(match, config):
     pie_pos = (pie["x"], pie["y"])
 
     for snake in match["snakes"].values():
+        if snake.get("stun_ticks_remaining", 0) > 0:
+            continue
         if snake["body"][0] == pie_pos:
             snake["health"] = min(config["starting_health"], snake["health"] + pie["value"])
             spawn_pie(match, config)
             return
 
 
-#applies collision damage from walls, obstacles, self body, enemy body, and head-on crashes.
-def apply_collision_damage(match, config):
+#returns collision damage totals and collided usernames for the current tick.
+def evaluate_collisions(match, config):
     players = match["players"]
     one = players[0]
     two = players[1]
     snake_one = match["snakes"][one]
     snake_two = match["snakes"][two]
 
-    damage = {
-        one: 0,
-        two: 0,
-    }
-
     width = config["grid_width"]
     height = config["grid_height"]
     obstacles = set(match["obstacles"])
+    collided = set()
+    damage = {one: 0, two: 0}
 
     for username, snake, other in ((one, snake_one, snake_two), (two, snake_two, snake_one)):
+        if snake.get("stun_ticks_remaining", 0) > 0:
+            continue
+
         head = snake["body"][0]
 
         if head[0] < 0 or head[0] >= width or head[1] < 0 or head[1] >= height:
             damage[username] += config["wall_damage"]
+            collided.add(username)
 
         if head in obstacles:
             damage[username] += config["obstacle_damage"]
+            collided.add(username)
 
         if head in snake["body"][1:]:
             damage[username] += config["self_damage"]
+            collided.add(username)
 
         if head in other["body"]:
             damage[username] += config["enemy_damage"]
+            collided.add(username)
 
     if snake_one["body"][0] == snake_two["body"][0]:
-        damage[one] += config["head_on_damage"]
-        damage[two] += config["head_on_damage"]
+        if snake_one.get("stun_ticks_remaining", 0) == 0:
+            damage[one] += config["head_on_damage"]
+            collided.add(one)
+        if snake_two.get("stun_ticks_remaining", 0) == 0:
+            damage[two] += config["head_on_damage"]
+            collided.add(two)
 
-    snake_one["health"] = max(0, snake_one["health"] - damage[one])
-    snake_two["health"] = max(0, snake_two["health"] - damage[two])
+    return damage, collided
+
+
+#applies collision damage to snake health values.
+def apply_collision_damage(match, damage):
+    for username, amount in damage.items():
+        if amount <= 0:
+            continue
+        snake = match["snakes"][username]
+        snake["health"] = max(0, snake["health"] - amount)
+
+
+#returns one fallback turn direction for collision recovery.
+def get_recovery_direction(snake):
+    turn_order = {
+        "UP": ["LEFT", "RIGHT", "DOWN", "UP"],
+        "DOWN": ["RIGHT", "LEFT", "UP", "DOWN"],
+        "LEFT": ["DOWN", "UP", "RIGHT", "LEFT"],
+        "RIGHT": ["UP", "DOWN", "LEFT", "RIGHT"],
+    }
+    return turn_order[snake["direction"]][0]
+
+
+#applies collision recovery by rolling back movement and starting pause/flicker state.
+def apply_collision_recovery(match, config, previous_bodies, collided_usernames):
+    if not collided_usernames:
+        return
+
+    pause_ticks = config["collision_pause_ticks"]
+    for username in collided_usernames:
+        snake = match["snakes"][username]
+        snake["body"] = list(previous_bodies[id(snake)])
+        snake["stun_ticks_remaining"] = pause_ticks
+        snake["resume_direction"] = get_recovery_direction(snake)
+
+
+#decrements collision pause counters and applies queued recovery direction when ready.
+def advance_collision_timers(match):
+    for snake in match["snakes"].values():
+        if snake.get("stun_ticks_remaining", 0) <= 0:
+            continue
+        snake["stun_ticks_remaining"] = max(0, snake["stun_ticks_remaining"] - 1)
+        if snake["stun_ticks_remaining"] == 0 and snake.get("resume_direction") is not None:
+            snake["direction"] = snake["resume_direction"]
+            snake["pending_direction"] = snake["resume_direction"]
+            snake["resume_direction"] = None
 
 
 #marks match as ended and sets winner and reason based on health and timer conditions.
@@ -290,10 +354,13 @@ def advance_match_one_tick(match, config):
     match["tick"] += 1
     match["remaining_ticks"] = max(0, match["remaining_ticks"] - 1)
 
+    advance_collision_timers(match)
     apply_pending_directions(match)
-    move_snakes(match)
+    previous_bodies = move_snakes(match)
     apply_pie_logic(match, config)
-    apply_collision_damage(match, config)
+    collision_damage, collided_usernames = evaluate_collisions(match, config)
+    apply_collision_damage(match, collision_damage)
+    apply_collision_recovery(match, config, previous_bodies, collided_usernames)
     resolve_match_outcome(match)
 
 

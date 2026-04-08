@@ -16,6 +16,10 @@ FPS = 60
 
 PANEL_WIDTH = 280
 GRID_MARGIN = 20
+BOARD_TOP_SPACE = 80
+BOARD_BOTTOM_SPACE = 40
+HEALTH_BAR_WIDTH = 300
+HEALTH_BAR_HEIGHT = 26
 BOARD_BG = (20, 24, 30)
 WHITE = (240, 240, 240)
 BLACK = (0, 0, 0)
@@ -683,21 +687,55 @@ def get_board_geometry(match):
             grid_width = 30
             grid_height = 20
 
-    board_width_pixels = WIDTH - PANEL_WIDTH - 2 * GRID_MARGIN
-    board_height_pixels = HEIGHT - 2 * GRID_MARGIN
+    board_width_pixels = WIDTH - 2 * GRID_MARGIN
+    board_height_pixels = HEIGHT - BOARD_TOP_SPACE - BOARD_BOTTOM_SPACE
     cell_size = min(board_width_pixels // grid_width, board_height_pixels // grid_height)
     board_width = cell_size * grid_width
     board_height = cell_size * grid_height
+    board_x = (WIDTH - board_width) // 2
+    board_y = BOARD_TOP_SPACE + (board_height_pixels - board_height) // 2
 
     return {
         "grid_width": grid_width,
         "grid_height": grid_height,
         "cell_size": cell_size,
-        "x": GRID_MARGIN,
-        "y": GRID_MARGIN,
+        "x": board_x,
+        "y": board_y,
         "pixel_width": board_width,
         "pixel_height": board_height,
     }
+
+
+#returns primary and other player names for the game HUD.
+def get_hud_player_names(match, state):
+    players = match.get("players", [])
+    if len(players) < 2:
+        return None, None
+
+    self_name = state.get("self_name")
+    if self_name in players:
+        other = players[1] if players[0] == self_name else players[0]
+        return self_name, other
+
+    return players[0], players[1]
+
+
+#draws one horizontal health bar for the given player name and health value.
+def draw_health_bar(screen, font, x, y, player_name, health_value):
+    health_value = max(0, min(100, int(health_value)))
+    draw_text_line(screen, font, player_name, WHITE, x, y)
+
+    bar_top = y + 30
+    outer_rect = pygame.Rect(x, bar_top, HEALTH_BAR_WIDTH, HEALTH_BAR_HEIGHT)
+    pygame.draw.rect(screen, DARK_GRAY, outer_rect)
+    pygame.draw.rect(screen, WHITE, outer_rect, 2)
+
+    fill_width = int((health_value / 100.0) * (HEALTH_BAR_WIDTH - 4))
+    fill_rect = pygame.Rect(x + 2, bar_top + 2, fill_width, HEALTH_BAR_HEIGHT - 4)
+    pygame.draw.rect(screen, GREEN, fill_rect)
+
+    draw_text_line(screen, font, f"Health: {health_value}", WHITE, x, bar_top + HEALTH_BAR_HEIGHT + 6)
+    return bar_top + HEALTH_BAR_HEIGHT + 36
 
 
 #draws the active game board from server-authoritative match state.
@@ -728,6 +766,9 @@ def draw_game_board(screen, state, font, small_font):
     snake_items = list(match.get("snakes", {}).items())
     for index, (username, snake) in enumerate(snake_items):
         color = GREEN if index == 0 else BLUE
+        is_flickering = snake.get("stun_ticks_remaining", 0) > 0 and match.get("tick", 0) % 2 == 0
+        if is_flickering:
+            color = WHITE
         for pos_index, segment in enumerate(snake.get("body", [])):
             sx = geo["x"] + segment["x"] * geo["cell_size"]
             sy = geo["y"] + segment["y"] * geo["cell_size"]
@@ -737,30 +778,31 @@ def draw_game_board(screen, state, font, small_font):
             else:
                 pygame.draw.rect(screen, tuple(max(20, c - 40) for c in color), rect)
 
-    panel_x = geo["x"] + geo["pixel_width"] + 20
-    panel_y = 30
-    panel_y = draw_text_line(screen, font, "Match Info", WHITE, panel_x, panel_y)
-    panel_y = draw_text_line(screen, small_font, f"Tick: {match.get('tick', 0)}", WHITE, panel_x, panel_y)
-    panel_y = draw_text_line(screen, small_font, f"Time left: {match.get('remaining_seconds', 0)}", WHITE, panel_x, panel_y)
-
-    players = match.get("players", [])
     snakes = match.get("snakes", {})
+    primary_name, other_name = get_hud_player_names(match, state)
 
-    panel_y += 10
-    for index, username in enumerate(players):
-        snake = snakes.get(username, {})
-        health = snake.get("health", 0)
-        color = GREEN if index == 0 else BLUE
-        panel_y = draw_text_line(screen, small_font, f"{username}", color, panel_x, panel_y)
-        panel_y = draw_text_line(screen, small_font, f"Health: {health}", WHITE, panel_x, panel_y)
-        panel_y += 6
+    hud_x = GRID_MARGIN
+    hud_y = GRID_MARGIN
+    if primary_name in snakes:
+        primary_snake = snakes[primary_name]
+        hud_y = draw_health_bar(screen, small_font, hud_x, hud_y, primary_name, primary_snake.get("health", 0))
+        primary_score = int(primary_snake.get("score", 0))
+        hud_y = draw_text_line(screen, small_font, f"Score: {primary_score}", WHITE, hud_x, hud_y)
 
-    panel_y += 8
+    if other_name in snakes:
+        other_health = int(snakes[other_name].get("health", 0))
+        hud_y = draw_text_line(screen, small_font, f"{other_name} Health: {other_health}", WHITE, hud_x, hud_y + 6)
+
+    time_seconds = int(match.get("remaining_seconds", 0))
+    draw_text_line(screen, font, f"Time Left: {time_seconds}s", WHITE, WIDTH - 240, GRID_MARGIN)
+
+    controls_x = WIDTH - 280
+    controls_y = HEIGHT - 72
     if state["is_spectator"]:
-        panel_y = draw_text_line(screen, small_font, "Mode: Spectator", YELLOW, panel_x, panel_y)
+        draw_text_line(screen, small_font, "Mode: Spectator", YELLOW, controls_x, controls_y)
     else:
-        panel_y = draw_text_line(screen, small_font, "Arrows: move snake", WHITE, panel_x, panel_y)
-    draw_text_line(screen, small_font, "Esc: back to lobby", WHITE, panel_x, panel_y)
+        draw_text_line(screen, small_font, "Arrows: move snake", WHITE, controls_x, controls_y)
+    draw_text_line(screen, small_font, "Esc: back to lobby", WHITE, controls_x, controls_y + 24)
 
 
 #draws the game screen including board and contextual status text.

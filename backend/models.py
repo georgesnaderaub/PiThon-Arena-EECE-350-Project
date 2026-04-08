@@ -36,6 +36,8 @@ def create_match(match_id, player_one, player_two, config):
         "direction": "RIGHT",
         "pending_direction": "RIGHT",
         "health": config["starting_health"],
+        "stun_ticks_remaining": 0,
+        "resume_direction": None,
     }
 
     snake_two = {
@@ -43,6 +45,8 @@ def create_match(match_id, player_one, player_two, config):
         "direction": "LEFT",
         "pending_direction": "LEFT",
         "health": config["starting_health"],
+        "stun_ticks_remaining": 0,
+        "resume_direction": None,
     }
 
     obstacles = [
