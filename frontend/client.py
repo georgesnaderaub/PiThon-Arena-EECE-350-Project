@@ -1,4 +1,4 @@
-"""Pygame frontend basic demo client for ΠThon Arena."""
+"""Pygame frontend client for ΠThon Arena."""
 
 import queue
 import socket
@@ -7,6 +7,7 @@ import threading
 import pygame
 
 from .net_utils import decode_message, encode_message
+from .ui import UIButton, STATE_PRESSED
 
 
 WIDTH = 1000
@@ -31,6 +32,9 @@ SCREEN_USERNAME = "USERNAME"
 SCREEN_LOBBY = "LOBBY"
 SCREEN_GAME = "GAME"
 SCREEN_GAME_OVER = "GAME_OVER"
+
+BUTTON_WIDTH = 260
+BUTTON_HEIGHT = 56
 
 
 #returns initial mutable client state used by the pygame loop.
@@ -58,6 +62,100 @@ def create_client_state():
         "is_spectator": False,
         "game_over": None,
         "connection_id": 0,
+        "buttons": {},
+    }
+
+
+#creates screen-specific button objects used by the frontend UI.
+def create_screen_buttons(font):
+    return {
+        SCREEN_CONNECT: {
+            "connect": UIButton(
+                40,
+                260,
+                BUTTON_WIDTH,
+                BUTTON_HEIGHT,
+                "Connect",
+                font,
+                image_idle_path="frontend/assets/ui/btn_primary_idle.png",
+                image_hover_path="frontend/assets/ui/btn_primary_hover.png",
+                image_pressed_path="frontend/assets/ui/btn_primary_pressed.png",
+                base_color=BLUE,
+            ),
+        },
+        SCREEN_USERNAME: {
+            "login": UIButton(
+                40,
+                200,
+                BUTTON_WIDTH,
+                BUTTON_HEIGHT,
+                "Login",
+                font,
+                image_idle_path="frontend/assets/ui/btn_primary_idle.png",
+                image_hover_path="frontend/assets/ui/btn_primary_hover.png",
+                image_pressed_path="frontend/assets/ui/btn_primary_pressed.png",
+                base_color=BLUE,
+            ),
+        },
+        SCREEN_LOBBY: {
+            "challenge": UIButton(
+                500, 
+                300, 
+                300, 
+                75, 
+                "Challenge", 
+                font,
+                image_idle_path="frontend/assets/ui/btn_secondary_idle.png",
+                image_hover_path="frontend/assets/ui/btn_secondary_hover.png",
+                image_pressed_path="frontend/assets/ui/btn_secondary_pressed.png", 
+                base_color=BLUE),
+            "accept": UIButton(
+                600, 
+                380, 
+                300, 
+                75, 
+                "Accept", 
+                font, 
+                image_idle_path="frontend/assets/ui/btn_secondary_idle.png",
+                image_hover_path="frontend/assets/ui/btn_secondary_hover.png",
+                image_pressed_path="frontend/assets/ui/btn_secondary_pressed.png",
+                base_color=GREEN),
+            "wait": UIButton(
+                520, 
+                460, 
+                300, 
+                75, 
+                "Wait", 
+                font,
+                image_idle_path="frontend/assets/ui/btn_secondary_idle.png",
+                image_hover_path="frontend/assets/ui/btn_secondary_hover.png",
+                image_pressed_path="frontend/assets/ui/btn_secondary_pressed.png",                 
+                base_color=(210, 160, 70)),
+            "watch": UIButton(
+                620, 
+                540, 
+                300, 
+                75, 
+                "Watch", 
+                font, 
+                image_idle_path="frontend/assets/ui/btn_secondary_idle.png",
+                image_hover_path="frontend/assets/ui/btn_secondary_hover.png",
+                image_pressed_path="frontend/assets/ui/btn_secondary_pressed.png",                
+                base_color=(160, 120, 210)),
+        },
+        SCREEN_GAME_OVER: {
+            "to_lobby": UIButton(
+                40, 
+                320, 
+                320, 
+                62, 
+                "Return To Lobby", 
+                font,
+                image_idle_path="frontend/assets/ui/btn_secondary_idle.png",
+                image_hover_path="frontend/assets/ui/btn_secondary_hover.png",
+                image_pressed_path="frontend/assets/ui/btn_secondary_pressed.png",                 
+                base_color=BLUE),
+        },
     }
 
 
@@ -172,6 +270,15 @@ def close_connection(state):
     state["network_thread"] = None
 
 
+#submits login to server using the username currently typed by the user.
+def submit_login(state):
+    username = state["username"].strip()
+    if not username:
+        state["error_text"] = "Username cannot be empty"
+        return
+    send_to_server(state, "LOGIN", {"username": username})
+
+
 #handles one incoming server message and updates client state.
 def handle_server_message(state, message):
     message_type = message["type"]
@@ -278,6 +385,7 @@ def handle_connect_screen_event(state, event):
         return
 
     if event.key == pygame.K_RETURN:
+        press_button_feedback(state, "connect")
         connect_to_server(state)
         return
 
@@ -301,11 +409,8 @@ def handle_username_screen_event(state, event):
         return
 
     if event.key == pygame.K_RETURN:
-        username = state["username"].strip()
-        if not username:
-            state["error_text"] = "Username cannot be empty"
-            return
-        send_to_server(state, "LOGIN", {"username": username})
+        press_button_feedback(state, "login")
+        submit_login(state)
         return
 
     if event.key == pygame.K_BACKSPACE:
@@ -342,6 +447,7 @@ def handle_lobby_screen_event(state, event):
         return
 
     if event.key == pygame.K_c:
+        press_button_feedback(state, "challenge")
         target = get_selected_lobby_user(state)
         if target is None:
             state["lobby_info"] = "No player selected"
@@ -349,17 +455,23 @@ def handle_lobby_screen_event(state, event):
         send_to_server(state, "CHALLENGE_PLAYER", {"target": target})
         return
 
-    if event.key == pygame.K_a and state["pending_challenger"]:
+    if event.key == pygame.K_a:
+        press_button_feedback(state, "accept")
+        if not state["pending_challenger"]:
+            state["lobby_info"] = "No pending challenge"
+            return
         send_to_server(state, "CHALLENGE_ACCEPT", {"from": state["pending_challenger"]})
         state["pending_challenger"] = None
         state["lobby_info"] = "Challenge accepted"
         return
 
     if event.key == pygame.K_w:
+        press_button_feedback(state, "wait")
         send_to_server(state, "WAITING", {})
         return
 
     if event.key == pygame.K_v:
+        press_button_feedback(state, "watch")
         send_to_server(state, "WATCH_MATCH", {})
 
 
@@ -388,7 +500,80 @@ def handle_game_screen_event(state, event):
 #handles restart navigation after game over.
 def handle_game_over_screen_event(state, event):
     if event.type == pygame.KEYDOWN and event.key == pygame.K_l:
+        press_button_feedback(state, "to_lobby")
         state["screen"] = SCREEN_LOBBY
+
+
+#shows pressed-state feedback for a screen button action.
+def press_button_feedback(state, action_name):
+    buttons = state["buttons"].get(state["screen"], {})
+    button = buttons.get(action_name)
+    if button is None:
+        return
+    if hasattr(button, "trigger_press_feedback"):
+        button.trigger_press_feedback()
+        return
+    button.state = STATE_PRESSED
+
+
+#runs one button action by name for the current screen.
+def run_button_action(state, action_name):
+    if state["screen"] == SCREEN_CONNECT and action_name == "connect":
+        connect_to_server(state)
+        return
+
+    if state["screen"] == SCREEN_USERNAME and action_name == "login":
+        submit_login(state)
+        return
+
+    if state["screen"] == SCREEN_LOBBY and action_name == "challenge":
+        target = get_selected_lobby_user(state)
+        if target is None:
+            state["lobby_info"] = "No player selected"
+            return
+        send_to_server(state, "CHALLENGE_PLAYER", {"target": target})
+        return
+
+    if state["screen"] == SCREEN_LOBBY and action_name == "accept":
+        if state["pending_challenger"]:
+            send_to_server(state, "CHALLENGE_ACCEPT", {"from": state["pending_challenger"]})
+            state["pending_challenger"] = None
+            state["lobby_info"] = "Challenge accepted"
+        else:
+            state["lobby_info"] = "No pending challenge"
+        return
+
+    if state["screen"] == SCREEN_LOBBY and action_name == "wait":
+        send_to_server(state, "WAITING", {})
+        return
+
+    if state["screen"] == SCREEN_LOBBY and action_name == "watch":
+        send_to_server(state, "WATCH_MATCH", {})
+        return
+
+    if state["screen"] == SCREEN_GAME_OVER and action_name == "to_lobby":
+        state["screen"] = SCREEN_LOBBY
+
+
+#updates all visible buttons for the current screen and triggers clicks.
+def update_screen_buttons(state):
+    buttons = state["buttons"].get(state["screen"], {})
+    if not buttons:
+        return
+
+    mouse_pos = pygame.mouse.get_pos()
+    mouse_down = pygame.mouse.get_pressed()[0]
+
+    for action_name, button in buttons.items():
+        if button.update(mouse_pos, mouse_down):
+            run_button_action(state, action_name)
+
+
+#draws all visible buttons for the current screen.
+def draw_screen_buttons(screen, state):
+    buttons = state["buttons"].get(state["screen"], {})
+    for button in buttons.values():
+        button.draw(screen)
 
 
 #dispatches pygame events to the active screen handler.
@@ -436,6 +621,8 @@ def draw_connect_screen(screen, font, big_font, state):
     if state["error_text"]:
         draw_text_line(screen, font, state["error_text"], RED, 40, y + 16)
 
+    draw_screen_buttons(screen, state)
+
 
 #draws the username login screen.
 def draw_username_screen(screen, font, big_font, state):
@@ -450,8 +637,10 @@ def draw_username_screen(screen, font, big_font, state):
     if state["error_text"]:
         draw_text_line(screen, font, state["error_text"], RED, 40, y + 46)
 
+    draw_screen_buttons(screen, state)
 
-#draws lobby content including online users and matchmaking shortcuts.
+
+#draws lobby content including online users and matchmaking controls.
 def draw_lobby_screen(screen, font, big_font, state):
     screen.fill(BOARD_BG)
     y = 30
@@ -471,16 +660,16 @@ def draw_lobby_screen(screen, font, big_font, state):
             y = draw_text_line(screen, font, f"{prefix}{user}", color, 20, y)
 
     y += 10
-    y = draw_text_line(screen, font, "C: challenge selected user", GRAY, 20, y)
-    y = draw_text_line(screen, font, "A: accept incoming challenge", GRAY, 20, y)
-    y = draw_text_line(screen, font, "W: waiting state", GRAY, 20, y)
-    y = draw_text_line(screen, font, "V: watch current match", GRAY, 20, y)
+    y = draw_text_line(screen, font, "Use buttons or keys (C/A/W/V)", GRAY, 20, y)
+    y = draw_text_line(screen, font, "Challenge / Accept / Wait / Watch", GRAY, 20, y)
 
     if state["pending_challenger"]:
         draw_text_line(screen, font, f"Incoming: {state['pending_challenger']}", ORANGE, 20, y + 16)
 
     if state["error_text"]:
         draw_text_line(screen, font, state["error_text"], RED, 20, HEIGHT - 36)
+
+    draw_screen_buttons(screen, state)
 
 
 #returns board geometry derived from current match dimensions.
@@ -597,7 +786,9 @@ def draw_game_over_screen(screen, font, big_font, state):
     winner_text = "Draw" if winner is None else f"Winner: {winner}"
     y = draw_text_line(screen, font, winner_text, YELLOW, 40, y + 20)
     y = draw_text_line(screen, font, f"Reason: {reason}", WHITE, 40, y)
-    y = draw_text_line(screen, font, "Press L to return to lobby", GRAY, 40, y + 20)
+    y = draw_text_line(screen, font, "Press L or click button to return", GRAY, 40, y + 20)
+
+    draw_screen_buttons(screen, state)
 
 
 #renders the currently active screen.
@@ -619,7 +810,7 @@ def run_client():
     pygame.init()
 
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("PiThon Arena Frontend Demo")
+    pygame.display.set_caption("PiThon Arena Frontend")
     clock = pygame.time.Clock()
 
     font = pygame.font.SysFont("consolas", 24)
@@ -627,12 +818,14 @@ def run_client():
     small_font = pygame.font.SysFont("consolas", 20)
 
     state = create_client_state()
+    state["buttons"] = create_screen_buttons(font)
 
     running = True
     while running:
         clock.tick(FPS)
 
         process_network_queue(state)
+        update_screen_buttons(state)
 
         for event in pygame.event.get():
             running = handle_event(state, event)
