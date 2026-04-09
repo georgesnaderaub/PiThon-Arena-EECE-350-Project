@@ -19,7 +19,7 @@ PANEL_WIDTH = 280
 GRID_MARGIN = 20
 BOARD_TOP_SPACE = 80
 BOARD_BOTTOM_SPACE = 40
-HEALTH_BAR_WIDTH = 300
+HEALTH_BAR_WIDTH = 320
 HEALTH_BAR_HEIGHT = 26
 CHAT_PANEL_WIDTH = 320
 CHAT_MAX_VISIBLE = 14
@@ -46,10 +46,16 @@ BUTTON_WIDTH = 260
 BUTTON_HEIGHT = 56
 CHEER_OPTIONS = ["gg", "go blue", "go green", "ya sayi2", "mal3abak"]
 MENU_BACKGROUND_PATH = "frontend/assets/backgrounds/menu_background.png"
+ARENA_FRAME_BG_PATH = "frontend/assets/arena/arena_frame_bg.png"
+ARENA_FLOOR_PATH = "frontend/assets/arena/arena_floor.png"
+CHAT_PANEL_BG_PATH = "frontend/assets/ui/chat_panel_bg.png"
+HUD_BAR_BG_PATH = "frontend/assets/hud/hud_bar_bg.png"
+CHAT_INPUT_BG_PATH = "frontend/assets/ui/chat_input_bg.png"
 MENU_TEXT_X = 100
 MENU_TEXT_Y = 100
 LOBBY_TEXT_X = 100
 LOBBY_TEXT_Y = 50
+MAX_CHAT_INPUT_LENGTH = 120
 
 
 #returns initial mutable client state used by the pygame loop.
@@ -77,8 +83,10 @@ def create_client_state():
         "error_text": "",
         "match": None,
         "is_spectator": False,
+        "chat_input": "",
         "game_over": None,
         "connection_id": 0,
+        "scaled_surface_cache": {},
         "buttons": {},
     }
 
@@ -116,8 +124,8 @@ def create_screen_buttons(font):
         },
         SCREEN_LOBBY: {
             "challenge": UIButton(
-                700, 
-                300, 
+                500, 
+                600, 
                 300, 
                 75, 
                 "Challenge", 
@@ -127,8 +135,8 @@ def create_screen_buttons(font):
                 image_pressed_path="frontend/assets/ui/btn_secondary_pressed.png", 
                 base_color=BLUE),
             "accept": UIButton(
-                800, 
-                380, 
+                750, 
+                550, 
                 300, 
                 75, 
                 "Accept", 
@@ -138,8 +146,8 @@ def create_screen_buttons(font):
                 image_pressed_path="frontend/assets/ui/btn_secondary_pressed.png",
                 base_color=GREEN),
             "watch": UIButton(
-                820, 
-                540, 
+                1000, 
+                500, 
                 300, 
                 75, 
                 "Watch", 
@@ -334,6 +342,7 @@ def handle_server_message(state, message):
         if isinstance(match, dict):
             state["match"] = match
             state["is_spectator"] = bool(payload.get("spectator", False))
+            state["chat_input"] = ""
             state["screen"] = SCREEN_GAME
             state["game_over"] = None
             state["error_text"] = ""
@@ -511,12 +520,26 @@ def handle_game_screen_event(state, event):
 
     if event.key == pygame.K_ESCAPE:
         state["screen"] = SCREEN_LOBBY
+        state["chat_input"] = ""
         return
 
     if state["is_spectator"]:
-        if event.unicode in {"1", "2", "3", "4", "5"}:
-            index = int(event.unicode) - 1
-            send_to_server(state, "CHEER", {"text": CHEER_OPTIONS[index]})
+        if event.key == pygame.K_RETURN:
+            message = state["chat_input"].strip()
+            if message:
+                send_to_server(state, "CHEER", {"text": message})
+                state["chat_input"] = ""
+            return
+        if event.key == pygame.K_BACKSPACE:
+            state["chat_input"] = state["chat_input"][:-1]
+            return
+        if event.unicode and event.unicode.isprintable() and len(state["chat_input"]) < MAX_CHAT_INPUT_LENGTH:
+            state["chat_input"] += event.unicode
+        return
+
+    if event.unicode in {"1", "2", "3", "4", "5"}:
+        index = int(event.unicode) - 1
+        send_to_server(state, "CHEER", {"text": CHEER_OPTIONS[index]})
         return
 
     if event.key == pygame.K_UP:
@@ -640,6 +663,39 @@ def load_menu_background():
         return None
     image = pygame.image.load(MENU_BACKGROUND_PATH).convert()
     return pygame.transform.scale(image, (WIDTH, HEIGHT))
+
+
+#loads one optional image surface from disk and returns None when missing.
+def load_optional_surface(path, use_alpha=False):
+    if not os.path.exists(path):
+        return None
+    image = pygame.image.load(path)
+    if use_alpha:
+        return image.convert_alpha()
+    return image.convert()
+
+
+#loads image assets used by the game screen UI.
+def load_game_ui_assets():
+    return {
+        "arena_frame_bg": load_optional_surface(ARENA_FRAME_BG_PATH, use_alpha=False),
+        "arena_floor": load_optional_surface(ARENA_FLOOR_PATH, use_alpha=False),
+        "chat_panel_bg": load_optional_surface(CHAT_PANEL_BG_PATH, use_alpha=False),
+        "hud_bar_bg": load_optional_surface(HUD_BAR_BG_PATH, use_alpha=True),
+        "chat_input_bg": load_optional_surface(CHAT_INPUT_BG_PATH, use_alpha=True),
+    }
+
+
+#returns a scaled surface using a simple cache keyed by asset name and size.
+def get_scaled_surface(state, cache_name, source_surface, width, height):
+    if source_surface is None:
+        return None
+
+    cache = state.setdefault("scaled_surface_cache", {})
+    key = (cache_name, width, height)
+    if key not in cache:
+        cache[key] = pygame.transform.scale(source_surface, (width, height))
+    return cache[key]
 
 
 #draws the menu background when available or uses the default fallback color.
@@ -784,11 +840,23 @@ def get_board_geometry(match):
 
 
 #draws one horizontal health bar anchored to a top corner for one player.
-def draw_corner_health_bar(screen, font, x, y, player_name, health_value):
+def draw_corner_health_bar(screen, font, name_font, name_color, state, x, y, player_name, health_value):
     health_value = max(0, min(100, int(health_value)))
-    text_surface = font.render(player_name, True, WHITE)
-    screen.blit(text_surface, (x, y))
 
+    text_surface = name_font.render(player_name, True, name_color)
+    health_surface = font.render(f"Health: {health_value}", True, WHITE)
+
+    panel_height = text_surface.get_height() + HEALTH_BAR_HEIGHT + health_surface.get_height() + 5
+    assets = state.get("game_ui_assets", {})
+    hud_bg = get_scaled_surface(state, "hud_bar_bg", assets.get("hud_bar_bg"), HEALTH_BAR_WIDTH, panel_height)
+    if hud_bg is not None:
+        screen.blit(hud_bg, (x, y + 4))
+    else:
+        fallback_rect = pygame.Rect(x, y, HEALTH_BAR_WIDTH, panel_height)
+        pygame.draw.rect(screen, (26, 30, 38), fallback_rect)
+        pygame.draw.rect(screen, DARK_GRAY, fallback_rect, 2)
+
+    screen.blit(text_surface, (x + 8, y + 4))
     bar_top = y + text_surface.get_height() + 6
     outer_rect = pygame.Rect(x, bar_top, HEALTH_BAR_WIDTH, HEALTH_BAR_HEIGHT)
     pygame.draw.rect(screen, DARK_GRAY, outer_rect)
@@ -798,19 +866,23 @@ def draw_corner_health_bar(screen, font, x, y, player_name, health_value):
     fill_rect = pygame.Rect(x + 2, bar_top + 2, fill_width, HEALTH_BAR_HEIGHT - 4)
     pygame.draw.rect(screen, GREEN, fill_rect)
 
-    health_surface = font.render(f"Health: {health_value}", True, WHITE)
-    screen.blit(health_surface, (x, bar_top + HEALTH_BAR_HEIGHT + 6))
+    screen.blit(health_surface, (x + 8, bar_top + HEALTH_BAR_HEIGHT + 6))
 
 
-#draws the right-side chat panel with recent messages and spectator quick-chat options.
+#draws the right-side chat panel with recent messages and input/help sections.
 def draw_chat_panel(screen, match, state, small_font):
     panel_x = WIDTH - CHAT_PANEL_WIDTH - GRID_MARGIN
     panel_y = GRID_MARGIN
     panel_h = HEIGHT - 2 * GRID_MARGIN
     panel_rect = pygame.Rect(panel_x, panel_y, CHAT_PANEL_WIDTH, panel_h)
 
-    pygame.draw.rect(screen, (24, 28, 36), panel_rect)
-    pygame.draw.rect(screen, DARK_GRAY, panel_rect, 2)
+    assets = state.get("game_ui_assets", {})
+    panel_bg = get_scaled_surface(state, "chat_panel_bg", assets.get("chat_panel_bg"), CHAT_PANEL_WIDTH, panel_h)
+    if panel_bg is not None:
+        screen.blit(panel_bg, panel_rect.topleft)
+    else:
+        pygame.draw.rect(screen, (24, 28, 36), panel_rect)
+        pygame.draw.rect(screen, DARK_GRAY, panel_rect, 2)
 
     text_y = panel_y + 12
     text_y = draw_text_line(screen, small_font, "Match Chat", WHITE, panel_x + 12, text_y)
@@ -826,8 +898,21 @@ def draw_chat_panel(screen, match, state, small_font):
             text_y = draw_text_line(screen, small_font, f"{sender}: {text}", WHITE, panel_x + 12, text_y + 2)
 
     if state["is_spectator"]:
+        draw_text_line(screen, small_font, "Spectator Chat:", YELLOW, panel_x + 12, panel_y + panel_h - 88)
+        draw_text_line(screen, small_font, "Enter to send", MENU_HINT_COLOR, panel_x + 12, panel_y + panel_h - 64)
+        input_rect = pygame.Rect(panel_x + 12, panel_y + panel_h - 42, CHAT_PANEL_WIDTH - 24, 28)
+        input_bg = get_scaled_surface(state, "chat_input_bg", assets.get("chat_input_bg"), input_rect.width, input_rect.height)
+        if input_bg is not None:
+            screen.blit(input_bg, input_rect.topleft)
+        else:
+            pygame.draw.rect(screen, (18, 18, 18), input_rect)
+            pygame.draw.rect(screen, WHITE, input_rect, 2)
+        typed = state.get("chat_input", "")
+        typed_surface = small_font.render(f"> {typed}", True, WHITE)
+        screen.blit(typed_surface, (input_rect.x + 6, input_rect.y + 4))
+    else:
         opt_y = panel_y + panel_h - 160
-        draw_text_line(screen, small_font, "Spectator Cheers:", YELLOW, panel_x + 12, opt_y)
+        draw_text_line(screen, small_font, "Quick Chat (1-5):", YELLOW, panel_x + 12, opt_y)
         for index, phrase in enumerate(CHEER_OPTIONS, start=1):
             opt_y += 26
             draw_text_line(screen, small_font, f"{index}. {phrase}", GRAY, panel_x + 12, opt_y)
@@ -843,7 +928,12 @@ def draw_game_board(screen, state, font, small_font):
     geo = get_board_geometry(match)
     board_rect = pygame.Rect(geo["x"], geo["y"], geo["pixel_width"], geo["pixel_height"])
 
-    pygame.draw.rect(screen, (18, 18, 24), board_rect)
+    assets = state.get("game_ui_assets", {})
+    floor_bg = get_scaled_surface(state, "arena_floor", assets.get("arena_floor"), geo["pixel_width"], geo["pixel_height"])
+    if floor_bg is not None:
+        screen.blit(floor_bg, board_rect.topleft)
+    else:
+        pygame.draw.rect(screen, (18, 18, 24), board_rect)
     pygame.draw.rect(screen, DARK_GRAY, board_rect, 2)
 
     for obstacle in match.get("obstacles", []):
@@ -884,19 +974,19 @@ def draw_game_board(screen, state, font, small_font):
 
         left_x = geo["x"]
         right_x = geo["x"] + geo["pixel_width"] - HEALTH_BAR_WIDTH
-        top_y = GRID_MARGIN
-        draw_corner_health_bar(screen, small_font, left_x, top_y, left_player, left_health)
-        draw_corner_health_bar(screen, small_font, right_x, top_y, right_player, right_health)
+        top_y = GRID_MARGIN + 8
+        draw_corner_health_bar(screen, small_font, state["hud_name_font"], BLUE, state, left_x, top_y, left_player, left_health)
+        draw_corner_health_bar(screen, small_font, state["hud_name_font"], ORANGE, state, right_x, top_y, right_player, right_health)
 
     time_seconds = int(match.get("remaining_seconds", 0))
     time_text = f"Time Left: {time_seconds}s"
     time_surface = font.render(time_text, True, WHITE)
     time_x = geo["x"] + (geo["pixel_width"] - time_surface.get_width()) // 2
-    screen.blit(time_surface, (time_x, GRID_MARGIN))
+    screen.blit(time_surface, (time_x, GRID_MARGIN + 6))
 
     draw_chat_panel(screen, match, state, small_font)
 
-    controls_x = WIDTH - CHAT_PANEL_WIDTH - GRID_MARGIN + 12
+    controls_x = GRID_MARGIN
     controls_y = HEIGHT - 72
     if state["is_spectator"]:
         draw_text_line(screen, small_font, "Mode: Spectator", YELLOW, controls_x, controls_y)
@@ -907,7 +997,11 @@ def draw_game_board(screen, state, font, small_font):
 
 #draws the game screen including board and contextual status text.
 def draw_game_screen(screen, font, big_font, small_font, state):
-    screen.fill(BOARD_BG)
+    frame_bg = get_scaled_surface(state, "arena_frame_bg", state.get("game_ui_assets", {}).get("arena_frame_bg"), WIDTH, HEIGHT)
+    if frame_bg is not None:
+        screen.blit(frame_bg, (0, 0))
+    else:
+        screen.fill(BOARD_BG)
     draw_game_board(screen, state, font, small_font)
 
     if state["error_text"]:
@@ -957,9 +1051,12 @@ def run_client():
     font = pygame.font.SysFont("consolas", 24)
     big_font = pygame.font.SysFont("consolas", 34)
     small_font = pygame.font.SysFont("consolas", 20)
+    hud_name_font = pygame.font.SysFont("consolas", 30)
 
     state = create_client_state()
     state["menu_background"] = load_menu_background()
+    state["game_ui_assets"] = load_game_ui_assets()
+    state["hud_name_font"] = hud_name_font
     state["buttons"] = create_screen_buttons(font)
 
     running = True

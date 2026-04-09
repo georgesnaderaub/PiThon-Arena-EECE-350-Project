@@ -47,7 +47,7 @@ RUNNING = threading.Event()
 STATE_LOCK = threading.Lock()
 STATE = create_connection_state()
 MAX_CHEER_MESSAGES = 30
-ALLOWED_CHEERS = {"gg", "go blue", "go green", "ya sayi2", "mal3abak"}
+MAX_CHAT_TEXT_LENGTH = 120
 
 
 #returns the gameplay configuration used by each match.
@@ -699,7 +699,7 @@ def handle_watch_match(session, payload):
     send_message(session["socket"], "MATCH_START", payload)
 
 
-#handles chat cheer messages and appends allowed entries to active match feed.
+#handles one chat message and appends it to the active match feed.
 def handle_cheer(session, payload):
     username = session["username"]
     text = payload.get("text")
@@ -707,9 +707,12 @@ def handle_cheer(session, payload):
         send_message(session["socket"], "ERROR", {"reason": "text is required"})
         return
 
-    normalized = text.strip().lower()
-    if normalized not in ALLOWED_CHEERS:
-        send_message(session["socket"], "ERROR", {"reason": "Unsupported cheer message"})
+    cleaned = text.strip()
+    if not cleaned:
+        send_message(session["socket"], "ERROR", {"reason": "text cannot be empty"})
+        return
+    if len(cleaned) > MAX_CHAT_TEXT_LENGTH:
+        send_message(session["socket"], "ERROR", {"reason": f"text too long (max {MAX_CHAT_TEXT_LENGTH})"})
         return
 
     with STATE_LOCK:
@@ -722,7 +725,7 @@ def handle_cheer(session, payload):
             send_message(session["socket"], "ERROR", {"reason": "User is not online"})
             return
 
-        match["cheers"].append({"from": username, "text": normalized})
+        match["cheers"].append({"from": username, "text": cleaned})
         if len(match["cheers"]) > MAX_CHEER_MESSAGES:
             match["cheers"] = match["cheers"][-MAX_CHEER_MESSAGES:]
 
