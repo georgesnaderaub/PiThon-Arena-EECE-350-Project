@@ -1,5 +1,6 @@
 """Pygame frontend client for ΠThon Arena."""
 
+import os
 import queue
 import socket
 import threading
@@ -32,6 +33,8 @@ ORANGE = (255, 170, 70)
 YELLOW = (255, 220, 70)
 GRAY = (130, 130, 130)
 DARK_GRAY = (70, 70, 70)
+MENU_TEXT_COLOR = (245, 245, 245)
+MENU_HINT_COLOR = (255, 235, 140)
 
 SCREEN_CONNECT = "CONNECT"
 SCREEN_USERNAME = "USERNAME"
@@ -42,6 +45,11 @@ SCREEN_GAME_OVER = "GAME_OVER"
 BUTTON_WIDTH = 260
 BUTTON_HEIGHT = 56
 CHEER_OPTIONS = ["gg", "go blue", "go green", "ya sayi2", "mal3abak"]
+MENU_BACKGROUND_PATH = "frontend/assets/backgrounds/menu_background.png"
+MENU_TEXT_X = 100
+MENU_TEXT_Y = 100
+LOBBY_TEXT_X = 100
+LOBBY_TEXT_Y = 50
 
 
 #returns initial mutable client state used by the pygame loop.
@@ -80,8 +88,8 @@ def create_screen_buttons(font):
     return {
         SCREEN_CONNECT: {
             "connect": UIButton(
-                40,
-                260,
+                150,
+                320,
                 BUTTON_WIDTH,
                 BUTTON_HEIGHT,
                 "Connect",
@@ -94,8 +102,8 @@ def create_screen_buttons(font):
         },
         SCREEN_USERNAME: {
             "login": UIButton(
-                40,
-                200,
+                150,
+                300,
                 BUTTON_WIDTH,
                 BUTTON_HEIGHT,
                 "Login",
@@ -108,7 +116,7 @@ def create_screen_buttons(font):
         },
         SCREEN_LOBBY: {
             "challenge": UIButton(
-                500, 
+                700, 
                 300, 
                 300, 
                 75, 
@@ -119,7 +127,7 @@ def create_screen_buttons(font):
                 image_pressed_path="frontend/assets/ui/btn_secondary_pressed.png", 
                 base_color=BLUE),
             "accept": UIButton(
-                600, 
+                800, 
                 380, 
                 300, 
                 75, 
@@ -129,19 +137,8 @@ def create_screen_buttons(font):
                 image_hover_path="frontend/assets/ui/btn_secondary_hover.png",
                 image_pressed_path="frontend/assets/ui/btn_secondary_pressed.png",
                 base_color=GREEN),
-            "wait": UIButton(
-                520, 
-                460, 
-                300, 
-                75, 
-                "Wait", 
-                font,
-                image_idle_path="frontend/assets/ui/btn_secondary_idle.png",
-                image_hover_path="frontend/assets/ui/btn_secondary_hover.png",
-                image_pressed_path="frontend/assets/ui/btn_secondary_pressed.png",                 
-                base_color=(210, 160, 70)),
             "watch": UIButton(
-                620, 
+                820, 
                 540, 
                 300, 
                 75, 
@@ -329,7 +326,7 @@ def handle_server_message(state, message):
         return
 
     if message_type == "WAITING":
-        state["lobby_info"] = "You are in waiting state"
+        state["lobby_info"] = "Waiting for challenge response"
         return
 
     if message_type == "MATCH_START":
@@ -455,7 +452,7 @@ def get_selected_active_match(state):
     return matches[index]
 
 
-#handles lobby shortcuts for challenge, accept, wait, and watch.
+#handles lobby shortcuts for challenge, accept, and watch.
 def handle_lobby_screen_event(state, event):
     if event.type != pygame.KEYDOWN:
         return
@@ -496,11 +493,6 @@ def handle_lobby_screen_event(state, event):
         send_to_server(state, "CHALLENGE_ACCEPT", {"from": state["pending_challenger"]})
         state["pending_challenger"] = None
         state["lobby_info"] = "Challenge accepted"
-        return
-
-    if event.key == pygame.K_w:
-        press_button_feedback(state, "wait")
-        send_to_server(state, "WAITING", {})
         return
 
     if event.key == pygame.K_v:
@@ -583,10 +575,6 @@ def run_button_action(state, action_name):
             state["lobby_info"] = "No pending challenge"
         return
 
-    if state["screen"] == SCREEN_LOBBY and action_name == "wait":
-        send_to_server(state, "WAITING", {})
-        return
-
     if state["screen"] == SCREEN_LOBBY and action_name == "watch":
         selected_match = get_selected_active_match(state)
         if selected_match is None:
@@ -646,50 +634,67 @@ def draw_text_line(screen, font, text, color, x, y):
     return y + surface.get_height() + 6
 
 
+#loads and scales the shared menu background image once at startup.
+def load_menu_background():
+    if not os.path.exists(MENU_BACKGROUND_PATH):
+        return None
+    image = pygame.image.load(MENU_BACKGROUND_PATH).convert()
+    return pygame.transform.scale(image, (WIDTH, HEIGHT))
+
+
+#draws the menu background when available or uses the default fallback color.
+def draw_menu_background(screen, state):
+    background = state.get("menu_background")
+    if background is not None:
+        screen.blit(background, (0, 0))
+    else:
+        screen.fill(BOARD_BG)
+
+
 #draws the connect screen with editable ip and port fields.
 def draw_connect_screen(screen, font, big_font, state):
-    screen.fill(BOARD_BG)
-    y = 80
-    y = draw_text_line(screen, big_font, "PiThon Arena Client", WHITE, 40, y)
+    draw_menu_background(screen, state)
+    y = MENU_TEXT_Y
+    y = draw_text_line(screen, big_font, "PiThon Arena Client", MENU_TEXT_COLOR, MENU_TEXT_X, y)
     y += 20
 
     ip_label = ">" if state["input_focus"] == "ip" else " "
     port_label = ">" if state["input_focus"] == "port" else " "
-    y = draw_text_line(screen, font, f"{ip_label} Server IP: {state['server_ip']}", WHITE, 40, y)
-    y = draw_text_line(screen, font, f"{port_label} Server Port: {state['server_port']}", WHITE, 40, y)
+    y = draw_text_line(screen, font, f"{ip_label} Server IP: {state['server_ip']}", MENU_TEXT_COLOR, MENU_TEXT_X, y)
+    y = draw_text_line(screen, font, f"{port_label} Server Port: {state['server_port']}", MENU_TEXT_COLOR, MENU_TEXT_X, y)
     y += 10
 
-    y = draw_text_line(screen, font, "Tab: switch field", GRAY, 40, y)
-    y = draw_text_line(screen, font, "Enter: connect", GRAY, 40, y)
+    y = draw_text_line(screen, font, "Tab: switch field", MENU_HINT_COLOR, MENU_TEXT_X, y)
+    y = draw_text_line(screen, font, "Enter: connect", MENU_HINT_COLOR, MENU_TEXT_X, y)
 
     if state["error_text"]:
-        draw_text_line(screen, font, state["error_text"], RED, 40, y + 16)
+        draw_text_line(screen, font, state["error_text"], RED, MENU_TEXT_X, y + 16)
 
     draw_screen_buttons(screen, state)
 
 
 #draws the username login screen.
 def draw_username_screen(screen, font, big_font, state):
-    screen.fill(BOARD_BG)
-    y = 80
-    y = draw_text_line(screen, big_font, "Choose Username", WHITE, 40, y)
+    draw_menu_background(screen, state)
+    y = MENU_TEXT_Y
+    y = draw_text_line(screen, big_font, "Choose Username", MENU_TEXT_COLOR, MENU_TEXT_X, y)
     y += 20
 
-    y = draw_text_line(screen, font, f"Username: {state['username']}", WHITE, 40, y)
-    y = draw_text_line(screen, font, "Enter: login", GRAY, 40, y + 10)
+    y = draw_text_line(screen, font, f"Username: {state['username']}", MENU_TEXT_COLOR, MENU_TEXT_X, y)
+    y = draw_text_line(screen, font, "Enter: login", MENU_HINT_COLOR, MENU_TEXT_X, y + 10)
 
     if state["error_text"]:
-        draw_text_line(screen, font, state["error_text"], RED, 40, y + 46)
+        draw_text_line(screen, font, state["error_text"], RED, MENU_TEXT_X, y + 46)
 
     draw_screen_buttons(screen, state)
 
 
 #draws lobby content including online users and matchmaking controls.
 def draw_lobby_screen(screen, font, big_font, state):
-    screen.fill(BOARD_BG)
-    y = 30
-    y = draw_text_line(screen, big_font, f"Lobby - {state['self_name']}", WHITE, 20, y)
-    y = draw_text_line(screen, font, state["lobby_info"], YELLOW, 20, y)
+    draw_menu_background(screen, state)
+    y = LOBBY_TEXT_Y
+    y = draw_text_line(screen, big_font, f"Lobby - {state['self_name']}", MENU_TEXT_COLOR, LOBBY_TEXT_X, y)
+    y = draw_text_line(screen, font, state["lobby_info"], MENU_HINT_COLOR, LOBBY_TEXT_X, y)
 
     in_game_players = set()
     for match in state.get("active_matches", []):
@@ -697,40 +702,51 @@ def draw_lobby_screen(screen, font, big_font, state):
             in_game_players.add(name)
 
     users = [name for name in state["online_users"] if name != state["self_name"]]
+    ticks = 0
+    if hasattr(pygame, "time") and hasattr(pygame.time, "get_ticks"):
+        ticks = pygame.time.get_ticks()
+    challenge_flicker_on = ((ticks // 400) % 2) == 0
     y += 8
-    y = draw_text_line(screen, font, "Online Players:", WHITE, 20, y)
+    y = draw_text_line(screen, font, "Online Players:", MENU_TEXT_COLOR, LOBBY_TEXT_X, y)
 
     if not users:
-        y = draw_text_line(screen, font, "No other players online", GRAY, 20, y)
+        y = draw_text_line(screen, font, "No other players online", MENU_TEXT_COLOR, LOBBY_TEXT_X, y)
     else:
         for index, user in enumerate(users):
             prefix = "> " if index == state["selected_user_index"] else "  "
-            color = BLUE if index == state["selected_user_index"] else WHITE
+            normal_color = ORANGE if index == state["selected_user_index"] else WHITE
+            color = normal_color
+            has_incoming = state["pending_challenger"] == user
+            if has_incoming:
+                color = RED if challenge_flicker_on else normal_color
             status = " (IN GAME)" if user in in_game_players else ""
-            y = draw_text_line(screen, font, f"{prefix}{user}{status}", color, 20, y)
+            label = f"{prefix}{user}{status}"
+            name_surface = font.render(label, True, color)
+            screen.blit(name_surface, (LOBBY_TEXT_X, y))
+            if has_incoming:
+                incoming_surface = font.render(" incoming challenge", True, color)
+                screen.blit(incoming_surface, (LOBBY_TEXT_X + name_surface.get_width() + 8, y))
+            y += name_surface.get_height() + 6
 
     y += 10
-    y = draw_text_line(screen, font, "Active Matches:", WHITE, 20, y)
+    y = draw_text_line(screen, font, "Active Matches:", MENU_TEXT_COLOR, LOBBY_TEXT_X, y)
     matches = state.get("active_matches", [])
     if not matches:
-        y = draw_text_line(screen, font, "No active match", GRAY, 20, y)
+        y = draw_text_line(screen, font, "No active match", MENU_TEXT_COLOR, LOBBY_TEXT_X, y)
     else:
         for index, match in enumerate(matches):
             players = match.get("players", [])
             label = " vs ".join(players) if len(players) == 2 else "Unknown players"
             prefix = "> " if index == state["selected_match_index"] else "  "
-            color = GREEN if index == state["selected_match_index"] else WHITE
-            y = draw_text_line(screen, font, f"{prefix}Match #{match.get('id', '?')}: {label}", color, 20, y)
+            color = RED if index == state["selected_match_index"] else WHITE
+            y = draw_text_line(screen, font, f"{prefix}Match #{match.get('id', '?')}: {label}", color, LOBBY_TEXT_X, y)
 
     y += 10
-    y = draw_text_line(screen, font, "Use buttons or keys (C/A/W/V)", GRAY, 20, y)
-    y = draw_text_line(screen, font, "Left/Right select match to watch", GRAY, 20, y)
-
-    if state["pending_challenger"]:
-        draw_text_line(screen, font, f"Incoming: {state['pending_challenger']}", ORANGE, 20, y + 16)
+    y = draw_text_line(screen, font, "Use buttons or keys (C/A/V)", MENU_HINT_COLOR, LOBBY_TEXT_X, y)
+    y = draw_text_line(screen, font, "Left/Right select match to watch", MENU_HINT_COLOR, LOBBY_TEXT_X, y)
 
     if state["error_text"]:
-        draw_text_line(screen, font, state["error_text"], RED, 20, HEIGHT - 36)
+        draw_text_line(screen, font, state["error_text"], RED, LOBBY_TEXT_X, HEIGHT - 36)
 
     draw_screen_buttons(screen, state)
 
@@ -943,6 +959,7 @@ def run_client():
     small_font = pygame.font.SysFont("consolas", 20)
 
     state = create_client_state()
+    state["menu_background"] = load_menu_background()
     state["buttons"] = create_screen_buttons(font)
 
     running = True

@@ -4,7 +4,7 @@ This backend now supports the full core demo flow:
 - TCP server with one thread per client.
 - Newline-delimited JSON protocol (`type`, `payload`).
 - `LOGIN` with unique username validation.
-- Lobby state (`online_users`, `waiting_players`, `spectators`).
+- Lobby state (`online_users`, `spectators`).
 - Matchmaking via `CHALLENGE_PLAYER` and `CHALLENGE_ACCEPT`.
 - One authoritative active match managed by the server tick loop.
 - Server-side snake movement, pie healing, obstacle/wall/body collision damage.

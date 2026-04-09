@@ -160,7 +160,7 @@ def set_waiting(username):
         STATE["spectators"].discard(username)
 
 
-#adds one username to spectators and removes that user from waiting queue.
+#adds one username to spectators.
 def set_spectator(username):
     with STATE_LOCK:
         STATE["spectators"].add(username)
@@ -611,6 +611,8 @@ def handle_challenge_player(session, payload):
 
         STATE["pending_challenges"][target] = challenger
 
+    set_waiting(challenger)
+    send_message(session["socket"], "WAITING", {"status": "queued"})
     send_message(session["socket"], "CHALLENGE_PLAYER", {"status": "sent", "target": target})
     send_to_users([target], "CHALLENGE_RECEIVED", {"from": challenger})
 

@@ -8,14 +8,14 @@ This frontend follows the tutorial coding style:
 ## Screens implemented
 - Connect screen (IP/port)
 - Username screen
-- Lobby screen (online users, challenge, accept, wait, watch)
+- Lobby screen (online users, challenge, accept, watch)
 - Game screen (render server state only)
 - Game over screen
 
 ## Controls
 - Connect screen: `Tab` switch field, `Enter` connect
 - Username screen: type username + `Enter`
-- Lobby: `Up/Down` select user, `C` challenge, `A` accept challenge, `W` wait, `V` watch
+- Lobby: `Up/Down` select user, `C` challenge, `A` accept challenge, `V` watch
 - Game: Arrow keys send movement (`INPUT`) for active player
 - Game over: `L` return to lobby
 
