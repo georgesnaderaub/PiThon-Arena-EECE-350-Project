@@ -18,9 +18,11 @@ SOCKET_TIMEOUT_SECONDS = 0.5
 GRID_WIDTH = 30
 GRID_HEIGHT = 20
 TICK_RATE = 8
-MATCH_DURATION_SECONDS = 60
+MATCH_DURATION_SECONDS = 90
 STARTING_HEALTH = 100
 PIE_HEAL = 10
+SLOW_DURATION_SECONDS = 3
+SLOWED_MOVE_INTERVAL_TICKS = 2
 WALL_DAMAGE = 15
 OBSTACLE_DAMAGE = 10
 SELF_DAMAGE = 20
@@ -59,6 +61,8 @@ def get_match_config():
         "duration_seconds": MATCH_DURATION_SECONDS,
         "starting_health": STARTING_HEALTH,
         "pie_heal": PIE_HEAL,
+        "slow_duration_ticks": SLOW_DURATION_SECONDS * TICK_RATE,
+        "slowed_move_interval_ticks": SLOWED_MOVE_INTERVAL_TICKS,
         "wall_damage": WALL_DAMAGE,
         "obstacle_damage": OBSTACLE_DAMAGE,
         "self_damage": SELF_DAMAGE,
@@ -88,19 +92,22 @@ def serialize_snake(snake):
         "body": [serialize_pos(pos) for pos in snake["body"]],
         "direction": snake["direction"],
         "health": snake["health"],
+        "score": snake.get("score", 0),
+        "slow_ticks_remaining": snake.get("slow_ticks_remaining", 0),
         "stun_ticks_remaining": snake.get("stun_ticks_remaining", 0),
     }
 
 
 #builds a serializable snapshot payload for match state broadcasts.
 def build_match_state_payload(match):
+    remaining_seconds = max(0, (match["remaining_ticks"] + TICK_RATE - 1) // TICK_RATE)
     return {
         "id": match["id"],
         "status": match["status"],
         "players": list(match["players"]),
         "tick": match["tick"],
         "remaining_ticks": match["remaining_ticks"],
-        "remaining_seconds": round(match["remaining_ticks"] / TICK_RATE, 2),
+        "remaining_seconds": remaining_seconds,
         "winner": match["winner"],
         "reason": match["reason"],
         "snakes": {name: serialize_snake(snake) for name, snake in match["snakes"].items()},
@@ -188,14 +195,15 @@ def is_reverse_direction(current_direction, requested_direction):
     return OPPOSITE_DIRECTIONS[current_direction] == requested_direction
 
 
-#applies pending directions for each snake while blocking illegal reverse turns.
-def apply_pending_directions(match):
-    for snake in match["snakes"].values():
-        if snake.get("stun_ticks_remaining", 0) > 0:
-            continue
-        requested = snake["pending_direction"]
-        if not is_reverse_direction(snake["direction"], requested):
-            snake["direction"] = requested
+#returns true when this snake should advance on the current tick.
+def should_move_snake_this_tick(snake):
+    interval = max(1, int(snake.get("move_interval_ticks", 1)))
+    counter = snake.get("move_tick_counter", 0) + 1
+    if counter >= interval:
+        snake["move_tick_counter"] = 0
+        return True
+    snake["move_tick_counter"] = counter
+    return False
 
 
 #moves each active snake forward by one cell and keeps its length unchanged.
@@ -204,12 +212,30 @@ def move_snakes(match):
     for snake in match["snakes"].values():
         previous_bodies[id(snake)] = list(snake["body"])
         if snake.get("stun_ticks_remaining", 0) > 0:
+            snake["move_tick_counter"] = 0
             continue
+        if not should_move_snake_this_tick(snake):
+            continue
+        requested = snake["pending_direction"]
+        if not is_reverse_direction(snake["direction"], requested):
+            snake["direction"] = requested
+
         current_head = snake["body"][0]
         new_head = get_next_position(current_head, snake["direction"])
         snake["body"].insert(0, new_head)
-        snake["body"].pop()
+        if snake.get("grow_pending", 0) > 0:
+            snake["grow_pending"] -= 1
+        else:
+            snake["body"].pop()
     return previous_bodies
+
+
+#returns the opponent username in a two-player match for a given username.
+def get_opponent_username(match, username):
+    players = match["players"]
+    if len(players) != 2 or username not in players:
+        return None
+    return players[1] if username == players[0] else players[0]
 
 
 #applies pie pickup effects and respawns a new pie when one is collected.
@@ -227,7 +253,21 @@ def apply_pie_logic(match, config):
         if snake.get("stun_ticks_remaining", 0) > 0:
             continue
         if snake["body"][0] == pie_pos:
-            snake["health"] = min(config["starting_health"], snake["health"] + pie["value"])
+            pie_kind = pie.get("kind", "green")
+            if pie_kind == "green":
+                snake["health"] = min(config["starting_health"], snake["health"] + config["pie_heal"])
+            elif pie_kind == "orange":
+                match["remaining_ticks"] += 5 * config["tick_rate"]
+            elif pie_kind == "blue":
+                owner = next((name for name, s in match["snakes"].items() if s is snake), None)
+                opponent = get_opponent_username(match, owner) if owner is not None else None
+                if opponent in match["snakes"]:
+                    opponent_snake = match["snakes"][opponent]
+                    opponent_snake["slow_ticks_remaining"] = config["slow_duration_ticks"]
+                    opponent_snake["move_interval_ticks"] = config["slowed_move_interval_ticks"]
+                    opponent_snake["move_tick_counter"] = 0
+            elif pie_kind == "purple":
+                snake["grow_pending"] = snake.get("grow_pending", 0) + 1
             spawn_pie(match, config)
             return
 
@@ -310,18 +350,34 @@ def apply_collision_recovery(match, config, previous_bodies, collided_usernames)
         snake["body"] = list(previous_bodies[id(snake)])
         snake["stun_ticks_remaining"] = pause_ticks
         snake["resume_direction"] = get_recovery_direction(snake)
+        snake["move_tick_counter"] = 0
 
 
-#decrements collision pause counters and applies queued recovery direction when ready.
+#decrements collision pause counters and applies buffered post-collision input when ready.
 def advance_collision_timers(match):
     for snake in match["snakes"].values():
         if snake.get("stun_ticks_remaining", 0) <= 0:
             continue
         snake["stun_ticks_remaining"] = max(0, snake["stun_ticks_remaining"] - 1)
         if snake["stun_ticks_remaining"] == 0 and snake.get("resume_direction") is not None:
-            snake["direction"] = snake["resume_direction"]
-            snake["pending_direction"] = snake["resume_direction"]
+            requested = snake.get("pending_direction", snake["direction"])
+            if requested != snake["direction"] and not is_reverse_direction(snake["direction"], requested):
+                snake["direction"] = requested
+            else:
+                snake["direction"] = snake["resume_direction"]
+            snake["pending_direction"] = snake["direction"]
             snake["resume_direction"] = None
+
+
+#decrements slow timers and restores normal movement speed when the debuff expires.
+def advance_slow_timers(match):
+    for snake in match["snakes"].values():
+        if snake.get("slow_ticks_remaining", 0) <= 0:
+            continue
+        snake["slow_ticks_remaining"] = max(0, snake["slow_ticks_remaining"] - 1)
+        if snake["slow_ticks_remaining"] == 0:
+            snake["move_interval_ticks"] = 1
+            snake["move_tick_counter"] = 0
 
 
 #marks match as ended and sets winner and reason based on health and timer conditions.
@@ -367,8 +423,8 @@ def advance_match_one_tick(match, config):
     match["remaining_ticks"] = max(0, match["remaining_ticks"] - 1)
 
     advance_collision_timers(match)
-    apply_pending_directions(match)
     previous_bodies = move_snakes(match)
+    advance_slow_timers(match)
     apply_pie_logic(match, config)
     collision_damage, collided_usernames = evaluate_collisions(match, config)
     apply_collision_damage(match, collision_damage)

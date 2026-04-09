@@ -31,6 +31,7 @@ RED = (230, 90, 90)
 BLUE = (80, 150, 255)
 ORANGE = (255, 170, 70)
 YELLOW = (255, 220, 70)
+PURPLE = (185, 110, 255)
 GRAY = (130, 130, 130)
 DARK_GRAY = (70, 70, 70)
 MENU_TEXT_COLOR = (245, 245, 245)
@@ -918,6 +919,17 @@ def draw_chat_panel(screen, match, state, small_font):
             draw_text_line(screen, small_font, f"{index}. {phrase}", GRAY, panel_x + 12, opt_y)
 
 
+#returns the render color for each pie kind.
+def get_pie_color(pie_kind):
+    if pie_kind == "green":
+        return GREEN
+    if pie_kind == "blue":
+        return BLUE
+    if pie_kind == "purple":
+        return PURPLE
+    return ORANGE
+
+
 #draws the active game board from server-authoritative match state.
 def draw_game_board(screen, state, font, small_font):
     match = state["match"]
@@ -946,7 +958,8 @@ def draw_game_board(screen, state, font, small_font):
         px = geo["x"] + pie["x"] * geo["cell_size"] + geo["cell_size"] // 2
         py = geo["y"] + pie["y"] * geo["cell_size"] + geo["cell_size"] // 2
         radius = max(3, geo["cell_size"] // 3)
-        pygame.draw.circle(screen, ORANGE, (px, py), radius)
+        pie_color = get_pie_color(pie.get("kind", "orange"))
+        pygame.draw.circle(screen, pie_color, (px, py), radius)
 
     snake_items = list(match.get("snakes", {}).items())
     for index, (username, snake) in enumerate(snake_items):
@@ -974,7 +987,7 @@ def draw_game_board(screen, state, font, small_font):
 
         left_x = geo["x"]
         right_x = geo["x"] + geo["pixel_width"] - HEALTH_BAR_WIDTH
-        top_y = GRID_MARGIN + 8
+        top_y = GRID_MARGIN - 5
         draw_corner_health_bar(screen, small_font, state["hud_name_font"], BLUE, state, left_x, top_y, left_player, left_health)
         draw_corner_health_bar(screen, small_font, state["hud_name_font"], ORANGE, state, right_x, top_y, right_player, right_health)
 
