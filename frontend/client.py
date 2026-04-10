@@ -52,6 +52,9 @@ ARENA_FLOOR_PATH = "frontend/assets/arena/arena_floor.png"
 CHAT_PANEL_BG_PATH = "frontend/assets/ui/chat_panel_bg.png"
 HUD_BAR_BG_PATH = "frontend/assets/hud/hud_bar_bg.png"
 CHAT_INPUT_BG_PATH = "frontend/assets/ui/chat_input_bg.png"
+GAME_OVER_DRAW_BG_PATH = "frontend/assets/backgrounds/game_over_draw.png"
+GAME_OVER_BLUE_WIN_BG_PATH = "frontend/assets/backgrounds/game_over_blue_wins.png"
+GAME_OVER_GREEN_WIN_BG_PATH = "frontend/assets/backgrounds/game_over_green_wins.png"
 MENU_TEXT_X = 100
 MENU_TEXT_Y = 100
 LOBBY_TEXT_X = 100
@@ -160,8 +163,8 @@ def create_screen_buttons(font):
         },
         SCREEN_GAME_OVER: {
             "to_lobby": UIButton(
-                40, 
-                320, 
+                980, 
+                5, 
                 320, 
                 62, 
                 "Return To Lobby", 
@@ -685,6 +688,9 @@ def load_game_ui_assets():
         "chat_panel_bg": load_optional_surface(CHAT_PANEL_BG_PATH, use_alpha=False),
         "hud_bar_bg": load_optional_surface(HUD_BAR_BG_PATH, use_alpha=True),
         "chat_input_bg": load_optional_surface(CHAT_INPUT_BG_PATH, use_alpha=True),
+        "game_over_draw_bg": load_optional_surface(GAME_OVER_DRAW_BG_PATH, use_alpha=False),
+        "game_over_blue_win_bg": load_optional_surface(GAME_OVER_BLUE_WIN_BG_PATH, use_alpha=False),
+        "game_over_green_win_bg": load_optional_surface(GAME_OVER_GREEN_WIN_BG_PATH, use_alpha=False),
     }
 
 
@@ -1043,28 +1049,79 @@ def draw_game_screen(screen, font, big_font, small_font, state):
         draw_text_line(screen, small_font, state["error_text"], RED, 20, HEIGHT - 30)
 
 
+#returns the proper game-over background and card player order based on the winner.
+def get_game_over_background_and_order(state, winner, players):
+    assets = state.get("game_ui_assets", {})
+    if len(players) != 2:
+        bg = get_scaled_surface(state, "game_over_draw_bg", assets.get("game_over_draw_bg"), WIDTH, HEIGHT)
+        return bg, players
+
+    player_green = players[0]
+    player_blue = players[1]
+
+    if winner == player_blue:
+        bg = get_scaled_surface(state, "game_over_blue_win_bg", assets.get("game_over_blue_win_bg"), WIDTH, HEIGHT)
+        return bg, [player_blue, player_green]
+    if winner == player_green:
+        bg = get_scaled_surface(state, "game_over_green_win_bg", assets.get("game_over_green_win_bg"), WIDTH, HEIGHT)
+        return bg, [player_green, player_blue]
+
+    bg = get_scaled_surface(state, "game_over_draw_bg", assets.get("game_over_draw_bg"), WIDTH, HEIGHT)
+    return bg, [player_blue, player_green]
+
+
+#draws one player's score and high-score labels next to pie/star icons on one result card.
+def draw_result_card_stats(screen, font, pie_stats, player_name, text_x, pie_y, star_y):
+    stats = pie_stats.get(player_name, {})
+    pies_collected = int(stats.get("pies_collected", 0))
+    high_score_label = str(stats.get("high_score_label", "high score: 0"))
+    pie_surface = font.render(f"score: {pies_collected}", True, WHITE)
+    star_surface = font.render(high_score_label, True, WHITE)
+    screen.blit(pie_surface, (text_x, pie_y))
+    screen.blit(star_surface, (text_x, star_y))
+
+
 #draws the game-over screen with winner information.
 def draw_game_over_screen(screen, font, big_font, state):
-    screen.fill(BOARD_BG)
-    y = 120
-    y = draw_text_line(screen, big_font, "Game Over", WHITE, 40, y)
-
     game_over = state["game_over"] or {}
     winner = game_over.get("winner")
     reason = game_over.get("reason")
     pie_stats = game_over.get("pie_stats", {})
-
-    winner_text = "Draw" if winner is None else f"Winner: {winner}"
-    y = draw_text_line(screen, font, winner_text, YELLOW, 40, y + 20)
-    y = draw_text_line(screen, font, f"Reason: {reason}", WHITE, 40, y)
     match = state.get("match") or {}
-    players = match.get("players", [])
-    for player_name in players:
-        stats = pie_stats.get(player_name, {})
-        pies_collected = stats.get("pies_collected", 0)
-        high_score_label = stats.get("high_score_label", "high score: 0")
-        y = draw_text_line(screen, font, f"{player_name} pies: {pies_collected} ({high_score_label})", WHITE, 40, y + 8)
-    y = draw_text_line(screen, font, "Press L or click button to return", GRAY, 40, y + 20)
+    players = list(match.get("players", []))
+
+    background, card_order = get_game_over_background_and_order(state, winner, players)
+    if background is not None:
+        screen.blit(background, (0, 0))
+    else:
+        screen.fill(BOARD_BG)
+
+    if winner is None:
+        message_text = "DRAW"
+    elif reason == "timer_end":
+        message_text = f"{winner} WINS BY PIES"
+    else:
+        message_text = f"{winner} WINS"
+
+    message_surface = big_font.render(message_text, True, YELLOW)
+    message_x = (WIDTH - message_surface.get_width()) // 2
+    screen.blit(message_surface, (message_x, 126))
+
+    if len(card_order) >= 2:
+        left_player = card_order[0]
+        right_player = card_order[1]
+        draw_result_card_stats(screen, font, pie_stats, left_player, 320, 566, 657)
+        draw_result_card_stats(screen, font, pie_stats, right_player, 800, 566, 657)
+    else:
+        y = 560
+        for player_name in players:
+            stats = pie_stats.get(player_name, {})
+            pies_collected = int(stats.get("pies_collected", 0))
+            high_score_label = str(stats.get("high_score_label", "high score: 0"))
+            y = draw_text_line(screen, font, f"{player_name} score: {pies_collected}", WHITE, 40, y)
+            y = draw_text_line(screen, font, high_score_label, WHITE, 40, y)
+
+    draw_text_line(screen, font, "Press L to return", YELLOW, 1020, 60)
 
     draw_screen_buttons(screen, state)
 

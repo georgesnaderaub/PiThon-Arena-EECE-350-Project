@@ -492,30 +492,32 @@ def resolve_match_outcome(match):
     two = players[1]
     health_one = match["snakes"][one]["health"]
     health_two = match["snakes"][two]["health"]
+    pies_one = int(match["snakes"][one].get("pies_collected", 0))
+    pies_two = int(match["snakes"][two].get("pies_collected", 0))
 
     if health_one <= 0 and health_two <= 0:
         match["status"] = "ended"
         match["winner"] = None
-        match["reason"] = "both_eliminated"
+        match["reason"] = "Both Players Died"
         return
 
     if health_one <= 0:
         match["status"] = "ended"
         match["winner"] = two
-        match["reason"] = "health_zero"
+        match["reason"] = "Player 1 Died"
         return
 
     if health_two <= 0:
         match["status"] = "ended"
         match["winner"] = one
-        match["reason"] = "health_zero"
+        match["reason"] = "Player 2 died"
         return
 
     if match["remaining_ticks"] <= 0:
         match["status"] = "ended"
-        if health_one > health_two:
+        if pies_one > pies_two:
             match["winner"] = one
-        elif health_two > health_one:
+        elif pies_two > pies_one:
             match["winner"] = two
         else:
             match["winner"] = None
