@@ -2,7 +2,9 @@
 
 import argparse
 import logging
+import os
 import socket
+import sqlite3
 import threading
 import time
 
@@ -50,6 +52,9 @@ STATE_LOCK = threading.Lock()
 STATE = create_connection_state()
 MAX_CHEER_MESSAGES = 30
 MAX_CHAT_TEXT_LENGTH = 120
+HIGHSCORE_DB_PATH = os.path.join(os.path.dirname(__file__), "pie_highscores.db")
+HIGHSCORE_STORE_MODE = "sqlite"
+HIGHSCORE_MEMORY_STORE = {}
 
 
 #returns the gameplay configuration used by each match.
@@ -93,6 +98,7 @@ def serialize_snake(snake):
         "direction": snake["direction"],
         "health": snake["health"],
         "score": snake.get("score", 0),
+        "pies_collected": snake.get("pies_collected", 0),
         "slow_ticks_remaining": snake.get("slow_ticks_remaining", 0),
         "stun_ticks_remaining": snake.get("stun_ticks_remaining", 0),
     }
@@ -122,6 +128,104 @@ def get_match_recipients(match):
     with STATE_LOCK:
         names = list(match["players"]) + [name for name in STATE["spectators"] if name in STATE["online_users"]]
     return list(dict.fromkeys(names))
+
+
+#creates the sqlite table used to persist per-user pie high scores.
+def initialize_highscore_store():
+    global HIGHSCORE_STORE_MODE
+    try:
+        connection = sqlite3.connect(HIGHSCORE_DB_PATH)
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pie_highscores (
+                username TEXT PRIMARY KEY,
+                max_pies INTEGER NOT NULL
+            )
+            """
+        )
+        connection.commit()
+        connection.close()
+        HIGHSCORE_STORE_MODE = "sqlite"
+    except sqlite3.Error:
+        HIGHSCORE_STORE_MODE = "memory"
+
+
+#stores one user's pies collected if it sets a new high score and returns summary fields.
+def update_and_get_high_score(username, pies_collected):
+    global HIGHSCORE_STORE_MODE
+    initialize_highscore_store()
+    if HIGHSCORE_STORE_MODE == "memory":
+        current_high = HIGHSCORE_MEMORY_STORE.get(username)
+        if current_high is None or pies_collected > current_high:
+            HIGHSCORE_MEMORY_STORE[username] = pies_collected
+            return pies_collected, True
+        return current_high, False
+
+    try:
+        connection = sqlite3.connect(HIGHSCORE_DB_PATH)
+        cursor = connection.cursor()
+        cursor.execute("SELECT max_pies FROM pie_highscores WHERE username = ?", (username,))
+        row = cursor.fetchone()
+
+        if row is None:
+            cursor.execute(
+                "INSERT INTO pie_highscores (username, max_pies) VALUES (?, ?)",
+                (username, pies_collected),
+            )
+            connection.commit()
+            connection.close()
+            return pies_collected, True
+
+        current_high = int(row[0])
+        if pies_collected > current_high:
+            cursor.execute(
+                "UPDATE pie_highscores SET max_pies = ? WHERE username = ?",
+                (pies_collected, username),
+            )
+            connection.commit()
+            connection.close()
+            return pies_collected, True
+
+        connection.close()
+        return current_high, False
+    except sqlite3.Error:
+        HIGHSCORE_STORE_MODE = "memory"
+        current_high = HIGHSCORE_MEMORY_STORE.get(username)
+        if current_high is None or pies_collected > current_high:
+            HIGHSCORE_MEMORY_STORE[username] = pies_collected
+            return pies_collected, True
+        return current_high, False
+
+
+#builds per-player pie totals and persisted high-score labels for game-over payloads.
+def build_pie_stats_payload(match):
+    pie_stats = {}
+    for username in match.get("players", []):
+        snake = match["snakes"].get(username, {})
+        pies_collected = int(snake.get("pies_collected", 0))
+        try:
+            high_score, is_new = update_and_get_high_score(username, pies_collected)
+        except Exception:
+            high_score = pies_collected
+            is_new = True
+        label = "new high score" if is_new else f"high score: {high_score}"
+        pie_stats[username] = {
+            "pies_collected": pies_collected,
+            "high_score": high_score,
+            "high_score_label": label,
+        }
+    return pie_stats
+
+
+#builds one GAME_OVER payload including winner, reason, match snapshot, and pie/high-score stats.
+def build_game_over_payload(match):
+    return {
+        "winner": match["winner"],
+        "reason": match["reason"],
+        "match": build_match_state_payload(match),
+        "pie_stats": build_pie_stats_payload(match),
+    }
 
 
 #sends one message to all currently connected users in the list.
@@ -253,6 +357,7 @@ def apply_pie_logic(match, config):
         if snake.get("stun_ticks_remaining", 0) > 0:
             continue
         if snake["body"][0] == pie_pos:
+            snake["pies_collected"] = snake.get("pies_collected", 0) + 1
             pie_kind = pie.get("kind", "green")
             if pie_kind == "green":
                 snake["health"] = min(config["starting_health"], snake["health"] + config["pie_heal"])
@@ -480,11 +585,7 @@ def broadcast_state_update(match):
 
 #broadcasts GAME_OVER for one finished match.
 def broadcast_game_over(match):
-    payload = {
-        "winner": match["winner"],
-        "reason": match["reason"],
-        "match": build_match_state_payload(match),
-    }
+    payload = build_game_over_payload(match)
 
     send_to_users(get_match_recipients(match), "GAME_OVER", payload)
 
@@ -515,11 +616,7 @@ def run_match_loop(match_id):
         send_to_users(recipients, "STATE_UPDATE", send_state)
 
         if ended:
-            game_over_payload = {
-                "winner": snapshot["winner"],
-                "reason": snapshot["reason"],
-                "match": snapshot,
-            }
+            game_over_payload = build_game_over_payload(match)
             send_to_users(recipients, "GAME_OVER", game_over_payload)
 
             with STATE_LOCK:
@@ -934,6 +1031,7 @@ def main():
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    initialize_highscore_store()
     run_server(args.host, args.port)
 
 

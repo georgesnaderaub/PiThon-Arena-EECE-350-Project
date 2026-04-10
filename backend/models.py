@@ -26,6 +26,92 @@ def create_user_session(connection, address):
     }
 
 
+#returns true when one cell falls inside the protected corner zones.
+def is_in_corner_zone(x, y, width, height, corner_margin):
+    if x < corner_margin and y < corner_margin:
+        return True
+    if x >= width - corner_margin and y < corner_margin:
+        return True
+    if x < corner_margin and y >= height - corner_margin:
+        return True
+    if x >= width - corner_margin and y >= height - corner_margin:
+        return True
+    return False
+
+
+#returns one random obstacle shape as relative cell offsets.
+def pick_random_shape_offsets():
+    return random.choice(
+        [
+            [(0, 0), (1, 0)],  # pair horizontal
+            [(0, 0), (0, 1)],  # pair vertical
+            [(0, 0), (1, 0), (2, 0)],  # triple horizontal
+            [(0, 0), (0, 1), (0, 2)],  # triple vertical
+            [(0, 0), (1, 0), (0, 1), (1, 1)],  # square
+            [(0, 0), (1, 0), (2, 0), (3, 0)],  # wall horizontal
+            [(0, 0), (0, 1), (0, 2), (0, 3)],  # wall vertical
+        ]
+    )
+
+
+#returns true when any candidate cell touches an occupied cell by one grid step.
+def touches_occupied(candidate_cells, occupied):
+    for x, y in candidate_cells:
+        neighbors = [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]
+        for neighbor in neighbors:
+            if neighbor in occupied:
+                return True
+    return False
+
+
+#builds up to five random obstacle shapes while keeping corners and spawn lanes clear.
+def generate_random_obstacles(width, height, forbidden_positions):
+    occupied = set(forbidden_positions)
+    obstacles = []
+    max_shapes = 5
+    corner_margin = 4
+    target_shapes = random.randint(3, max_shapes)
+    placement_attempts = 800
+
+    for _ in range(placement_attempts):
+        if len(obstacles) >= target_shapes:
+            break
+
+        offsets = pick_random_shape_offsets()
+        anchor_x = random.randint(0, width - 1)
+        anchor_y = random.randint(0, height - 1)
+        shape_cells = []
+        valid = True
+
+        for dx, dy in offsets:
+            x = anchor_x + dx
+            y = anchor_y + dy
+            if x < 0 or x >= width or y < 0 or y >= height:
+                valid = False
+                break
+            if (x, y) in occupied:
+                valid = False
+                break
+            if is_in_corner_zone(x, y, width, height, corner_margin):
+                valid = False
+                break
+            shape_cells.append((x, y))
+
+        if not valid:
+            continue
+
+        if touches_occupied(shape_cells, occupied):
+            continue
+
+        obstacles.append(shape_cells)
+        occupied.update(shape_cells)
+
+    flattened = []
+    for shape in obstacles[:max_shapes]:
+        flattened.extend(shape)
+    return flattened
+
+
 #creates a fresh match object with players, snakes, obstacles, and one starting pie.
 def create_match(match_id, player_one, player_two, config):
     width = config["grid_width"]
@@ -37,6 +123,7 @@ def create_match(match_id, player_one, player_two, config):
         "pending_direction": "RIGHT",
         "health": config["starting_health"],
         "score": 0,
+        "pies_collected": 0,
         "grow_pending": 0,
         "move_interval_ticks": 1,
         "move_tick_counter": 0,
@@ -51,6 +138,7 @@ def create_match(match_id, player_one, player_two, config):
         "pending_direction": "LEFT",
         "health": config["starting_health"],
         "score": 0,
+        "pies_collected": 0,
         "grow_pending": 0,
         "move_interval_ticks": 1,
         "move_tick_counter": 0,
@@ -59,12 +147,8 @@ def create_match(match_id, player_one, player_two, config):
         "resume_direction": None,
     }
 
-    obstacles = [
-        (width // 2, height // 2 - 2),
-        (width // 2, height // 2 - 1),
-        (width // 2, height // 2),
-        (width // 2, height // 2 + 1),
-    ]
+    forbidden = set(snake_one["body"]) | set(snake_two["body"])
+    obstacles = generate_random_obstacles(width, height, forbidden)
 
     match = {
         "id": match_id,

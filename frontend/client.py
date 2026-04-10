@@ -359,6 +359,7 @@ def handle_server_message(state, message):
         state["game_over"] = {
             "winner": payload.get("winner"),
             "reason": payload.get("reason"),
+            "pie_stats": payload.get("pie_stats", {}),
         }
         match = payload.get("match")
         if isinstance(match, dict):
@@ -930,6 +931,24 @@ def get_pie_color(pie_kind):
     return ORANGE
 
 
+#draws one-line pie effect descriptions under the arena with colored circle markers.
+def draw_pie_descriptions(screen, font, start_x, start_y):
+    entries = [
+        (ORANGE, "+5s"),
+        (GREEN, "heal"),
+        (BLUE, "slow opponent"),
+        (PURPLE, "+1 length"),
+    ]
+
+    x = start_x
+    y = start_y
+    for color, label in entries:
+        pygame.draw.circle(screen, color, (x + 7, y + 10), 6)
+        text_surface = font.render(f": {label}", True, WHITE)
+        screen.blit(text_surface, (x + 18, y))
+        x += 18 + text_surface.get_width() + 18
+
+
 #draws the active game board from server-authoritative match state.
 def draw_game_board(screen, state, font, small_font):
     match = state["match"]
@@ -999,6 +1018,9 @@ def draw_game_board(screen, state, font, small_font):
 
     draw_chat_panel(screen, match, state, small_font)
 
+    pie_legend_y = geo["y"] + geo["pixel_height"] + 10
+    draw_pie_descriptions(screen, small_font, geo["x"], pie_legend_y)
+
     controls_x = GRID_MARGIN
     controls_y = HEIGHT - 72
     if state["is_spectator"]:
@@ -1030,10 +1052,18 @@ def draw_game_over_screen(screen, font, big_font, state):
     game_over = state["game_over"] or {}
     winner = game_over.get("winner")
     reason = game_over.get("reason")
+    pie_stats = game_over.get("pie_stats", {})
 
     winner_text = "Draw" if winner is None else f"Winner: {winner}"
     y = draw_text_line(screen, font, winner_text, YELLOW, 40, y + 20)
     y = draw_text_line(screen, font, f"Reason: {reason}", WHITE, 40, y)
+    match = state.get("match") or {}
+    players = match.get("players", [])
+    for player_name in players:
+        stats = pie_stats.get(player_name, {})
+        pies_collected = stats.get("pies_collected", 0)
+        high_score_label = stats.get("high_score_label", "high score: 0")
+        y = draw_text_line(screen, font, f"{player_name} pies: {pies_collected} ({high_score_label})", WHITE, 40, y + 8)
     y = draw_text_line(screen, font, "Press L or click button to return", GRAY, 40, y + 20)
 
     draw_screen_buttons(screen, state)

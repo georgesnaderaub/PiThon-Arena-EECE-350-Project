@@ -240,3 +240,7 @@ frontend/assets/junk/PiThon-Arena-EECE-350-Project-main (1).zip
 frontend/assets/junk/PiThon-Arena-EECE-350-Project-main.zip
 frontend/assets/junk/Pixel art snake sprite collection.png
 frontend/assets/junk/Stone Board_ Stone banner elements for game and web in cartoon style_.jfif
+
+# runtime sqlite highscore store
+backend/pie_highscores.db
+backend/test_pie_highscores.sqlite
