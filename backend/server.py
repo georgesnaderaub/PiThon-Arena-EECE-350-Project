@@ -3,12 +3,13 @@
 import argparse
 import logging
 import os
+import random
 import socket
 import sqlite3
 import threading
 import time
 
-from .models import create_connection_state, create_match, create_user_session, spawn_pie
+from .models import add_random_obstacle, create_connection_state, create_match, create_user_session, spawn_pie
 from .protocol import ProtocolError, decode_message, send_message
 
 
@@ -31,6 +32,9 @@ SELF_DAMAGE = 20
 ENEMY_DAMAGE = 20
 HEAD_ON_DAMAGE = 20
 COLLISION_PAUSE_SECONDS = 1
+OBSTACLE_SPAWN_INTERVAL_SECONDS = 8
+OBSTACLE_SPAWN_CHANCE = 0.45
+MAX_OBSTACLE_SHAPES = 8
 
 DIRECTION_DELTAS = {
     "UP": (0, -1),
@@ -74,6 +78,9 @@ def get_match_config():
         "enemy_damage": ENEMY_DAMAGE,
         "head_on_damage": HEAD_ON_DAMAGE,
         "collision_pause_ticks": COLLISION_PAUSE_SECONDS * TICK_RATE,
+        "obstacle_spawn_interval_ticks": OBSTACLE_SPAWN_INTERVAL_SECONDS * TICK_RATE,
+        "obstacle_spawn_chance": OBSTACLE_SPAWN_CHANCE,
+        "max_obstacle_shapes": MAX_OBSTACLE_SHAPES,
     }
 
 
@@ -524,6 +531,18 @@ def resolve_match_outcome(match):
         match["reason"] = "timer_end"
 
 
+#tries to add one random obstacle shape at scheduled intervals during the match.
+def maybe_spawn_match_obstacle(match, config):
+    spawn_interval = int(config.get("obstacle_spawn_interval_ticks", 0))
+    if spawn_interval <= 0:
+        return False
+    if match["tick"] % spawn_interval != 0:
+        return False
+    if random.random() > float(config.get("obstacle_spawn_chance", 0.0)):
+        return False
+    return add_random_obstacle(match, config)
+
+
 #runs one authoritative game tick update over movement, items, collisions, and winner logic.
 def advance_match_one_tick(match, config):
     match["tick"] += 1
@@ -533,6 +552,7 @@ def advance_match_one_tick(match, config):
     previous_bodies = move_snakes(match)
     advance_slow_timers(match)
     apply_pie_logic(match, config)
+    maybe_spawn_match_obstacle(match, config)
     collision_damage, collided_usernames = evaluate_collisions(match, config)
     apply_collision_damage(match, collision_damage)
     apply_collision_recovery(match, config, previous_bodies, collided_usernames)

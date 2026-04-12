@@ -64,19 +64,17 @@ def touches_occupied(candidate_cells, occupied):
     return False
 
 
-#builds up to five random obstacle shapes while keeping corners and spawn lanes clear.
-def generate_random_obstacles(width, height, forbidden_positions):
-    occupied = set(forbidden_positions)
-    obstacles = []
-    max_shapes = 5
-    corner_margin = 4
-    target_shapes = random.randint(3, max_shapes)
-    placement_attempts = 800
+#returns one flattened obstacle list from grouped obstacle shapes.
+def flatten_obstacle_shapes(obstacle_shapes):
+    flattened = []
+    for shape in obstacle_shapes:
+        flattened.extend(shape)
+    return flattened
 
+
+#returns one random obstacle shape that fits without touching occupied cells.
+def find_random_obstacle_shape(width, height, occupied, corner_margin=4, placement_attempts=800):
     for _ in range(placement_attempts):
-        if len(obstacles) >= target_shapes:
-            break
-
         offsets = pick_random_shape_offsets()
         anchor_x = random.randint(0, width - 1)
         anchor_y = random.randint(0, height - 1)
@@ -103,13 +101,27 @@ def generate_random_obstacles(width, height, forbidden_positions):
         if touches_occupied(shape_cells, occupied):
             continue
 
-        obstacles.append(shape_cells)
+        return shape_cells
+
+    return None
+
+
+#builds up to five random obstacle shapes while keeping corners and spawn lanes clear.
+def generate_random_obstacles(width, height, forbidden_positions):
+    occupied = set(forbidden_positions)
+    obstacle_shapes = []
+    max_shapes = 5
+    corner_margin = 4
+    target_shapes = random.randint(3, max_shapes)
+
+    while len(obstacle_shapes) < target_shapes:
+        shape_cells = find_random_obstacle_shape(width, height, occupied, corner_margin)
+        if shape_cells is None:
+            break
+        obstacle_shapes.append(shape_cells)
         occupied.update(shape_cells)
 
-    flattened = []
-    for shape in obstacles[:max_shapes]:
-        flattened.extend(shape)
-    return flattened
+    return flatten_obstacle_shapes(obstacle_shapes[:max_shapes])
 
 
 #creates a fresh match object with players, snakes, obstacles, and one starting pie.
@@ -148,7 +160,15 @@ def create_match(match_id, player_one, player_two, config):
     }
 
     forbidden = set(snake_one["body"]) | set(snake_two["body"])
-    obstacles = generate_random_obstacles(width, height, forbidden)
+    obstacle_shapes = []
+    occupied = set(forbidden)
+    target_shapes = random.randint(3, 5)
+    while len(obstacle_shapes) < target_shapes:
+        shape_cells = find_random_obstacle_shape(width, height, occupied)
+        if shape_cells is None:
+            break
+        obstacle_shapes.append(shape_cells)
+        occupied.update(shape_cells)
 
     match = {
         "id": match_id,
@@ -162,7 +182,8 @@ def create_match(match_id, player_one, player_two, config):
             player_one: snake_one,
             player_two: snake_two,
         },
-        "obstacles": obstacles,
+        "obstacle_shapes": obstacle_shapes,
+        "obstacles": flatten_obstacle_shapes(obstacle_shapes),
         "pies": [],
         "cheers": [],
     }
@@ -191,3 +212,29 @@ def spawn_pie(match, config):
             pie_value = 1 if pie_kind == "orange" else config["pie_heal"] if pie_kind == "green" else 0
             match["pies"] = [{"x": x, "y": y, "kind": pie_kind, "value": pie_value}]
             return
+
+
+#tries to add one new random obstacle shape into an active match.
+def add_random_obstacle(match, config):
+    obstacle_shapes = match.setdefault("obstacle_shapes", [])
+    max_shapes = config.get("max_obstacle_shapes", 5)
+    if len(obstacle_shapes) >= max_shapes:
+        return False
+
+    occupied = set(match.get("obstacles", []))
+    for snake in match["snakes"].values():
+        occupied.update(snake["body"])
+    for pie in match.get("pies", []):
+        occupied.add((pie["x"], pie["y"]))
+
+    shape_cells = find_random_obstacle_shape(
+        config["grid_width"],
+        config["grid_height"],
+        occupied,
+    )
+    if shape_cells is None:
+        return False
+
+    obstacle_shapes.append(shape_cells)
+    match["obstacles"] = flatten_obstacle_shapes(obstacle_shapes)
+    return True
