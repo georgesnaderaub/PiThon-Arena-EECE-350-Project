@@ -42,6 +42,7 @@ SCREEN_USERNAME = "USERNAME"
 SCREEN_LOBBY = "LOBBY"
 SCREEN_GAME = "GAME"
 SCREEN_GAME_OVER = "GAME_OVER"
+SCREEN_SETTINGS = "SETTINGS"
 
 BUTTON_WIDTH = 260
 BUTTON_HEIGHT = 56
@@ -57,7 +58,9 @@ GAME_OVER_BLUE_WIN_BG_PATH = "frontend/assets/backgrounds/game_over_blue_wins.pn
 GAME_OVER_GREEN_WIN_BG_PATH = "frontend/assets/backgrounds/game_over_green_wins.png"
 MENU_MUSIC_PATH = "frontend/assets/audio/Tail-Waggin' Tasty.mp3"
 MATCH_MUSIC_PATH = "frontend/assets/audio/TIme Trial.mp3"
-MUSIC_VOLUME = 0.35
+MUSIC_VOLUME = 0.5
+SFX_VOLUME = 0.3
+VOLUME_STEP = 0.05
 EFFECTS_DIR = "frontend/assets/effects"
 BUTTON_SFX_FALLBACK_PATH = "frontend/assets/effects/button_press.wav"
 PIE_SFX_FALLBACK_PATH = "frontend/assets/effects/collect_pie.wav"
@@ -104,6 +107,10 @@ def create_client_state():
         "current_music_track": None,
         "last_music_screen": None,
         "sound_effects": {},
+        "music_volume": MUSIC_VOLUME,
+        "sfx_volume": SFX_VOLUME,
+        "settings_selected_index": 0,
+        "settings_return_screen": SCREEN_LOBBY,
     }
 
 
@@ -126,7 +133,7 @@ def initialize_music_system(state):
 
 #returns the target background track for each visible screen.
 def get_music_track_for_screen(screen_name):
-    if screen_name in {SCREEN_CONNECT, SCREEN_USERNAME, SCREEN_LOBBY}:
+    if screen_name in {SCREEN_CONNECT, SCREEN_USERNAME, SCREEN_LOBBY, SCREEN_SETTINGS}:
         return MENU_MUSIC_PATH
     if screen_name in {SCREEN_GAME, SCREEN_GAME_OVER}:
         return MATCH_MUSIC_PATH
@@ -153,7 +160,7 @@ def play_background_music_track(state, track_path):
 
     try:
         pygame.mixer.music.load(track_path)
-        pygame.mixer.music.set_volume(MUSIC_VOLUME)
+        pygame.mixer.music.set_volume(float(state.get("music_volume", MUSIC_VOLUME)))
         pygame.mixer.music.play(-1)
     except pygame.error:
         pygame.mixer.music.stop()
@@ -221,8 +228,60 @@ def play_sound_effect(state, effect_key):
     if effect is None:
         return
     try:
+        effect.set_volume(float(state.get("sfx_volume", SFX_VOLUME)))
         effect.play()
     except pygame.error:
+        return
+
+
+#clamps one volume value between 0.0 and 1.0.
+def clamp_volume(value):
+    return max(0.0, min(1.0, float(value)))
+
+
+#opens the settings screen and remembers which screen should be restored on exit.
+def open_settings_screen(state):
+    previous = state.get("screen")
+    if previous != SCREEN_SETTINGS:
+        state["settings_return_screen"] = previous
+    state["settings_selected_index"] = 0
+    state["screen"] = SCREEN_SETTINGS
+
+
+#applies one left/right volume step to the selected settings row.
+def apply_settings_volume_step(state, delta):
+    selected_index = int(state.get("settings_selected_index", 0))
+    if selected_index == 0:
+        state["music_volume"] = clamp_volume(state.get("music_volume", MUSIC_VOLUME) + delta)
+        if state.get("music_enabled"):
+            try:
+                pygame.mixer.music.set_volume(float(state["music_volume"]))
+            except pygame.error:
+                return
+        return
+
+    state["sfx_volume"] = clamp_volume(state.get("sfx_volume", SFX_VOLUME) + delta)
+
+
+#handles keyboard controls on the settings screen.
+def handle_settings_screen_event(state, event):
+    if event.type != pygame.KEYDOWN:
+        return
+
+    if event.key in {pygame.K_ESCAPE, pygame.K_RETURN}:
+        state["screen"] = state.get("settings_return_screen", SCREEN_LOBBY)
+        return
+
+    if event.key in {pygame.K_UP, pygame.K_DOWN}:
+        state["settings_selected_index"] = (int(state.get("settings_selected_index", 0)) + (1 if event.key == pygame.K_DOWN else -1)) % 2
+        return
+
+    if event.key == pygame.K_LEFT:
+        apply_settings_volume_step(state, -VOLUME_STEP)
+        return
+
+    if event.key == pygame.K_RIGHT:
+        apply_settings_volume_step(state, VOLUME_STEP)
         return
 
 
@@ -259,6 +318,22 @@ def play_match_delta_sound_effects(state, previous_match, current_match):
         play_sound_effect(state, "collision")
 
 
+#returns true when a new cheer message appears between two match snapshots.
+def has_new_cheer_message(previous_match, current_match):
+    previous_cheers = []
+    current_cheers = []
+    if isinstance(previous_match, dict):
+        previous_cheers = list(previous_match.get("cheers", []))
+    if isinstance(current_match, dict):
+        current_cheers = list(current_match.get("cheers", []))
+
+    if len(current_cheers) > len(previous_cheers):
+        return True
+    if len(current_cheers) == len(previous_cheers) and current_cheers != previous_cheers:
+        return True
+    return False
+
+
 #creates screen-specific button objects used by the frontend UI.
 def create_screen_buttons(font):
     return {
@@ -292,8 +367,8 @@ def create_screen_buttons(font):
         },
         SCREEN_LOBBY: {
             "challenge": UIButton(
-                500, 
-                600, 
+                1000, 
+                450, 
                 300, 
                 75, 
                 "Challenge", 
@@ -304,7 +379,7 @@ def create_screen_buttons(font):
                 base_color=BLUE),
             "accept": UIButton(
                 750, 
-                550, 
+                500, 
                 300, 
                 75, 
                 "Accept", 
@@ -315,7 +390,7 @@ def create_screen_buttons(font):
                 base_color=GREEN),
             "watch": UIButton(
                 1000, 
-                500, 
+                550, 
                 300, 
                 75, 
                 "Watch", 
@@ -324,6 +399,17 @@ def create_screen_buttons(font):
                 image_hover_path="frontend/assets/ui/btn_secondary_hover.png",
                 image_pressed_path="frontend/assets/ui/btn_secondary_pressed.png",                
                 base_color=(160, 120, 210)),
+            "settings": UIButton(
+                750,
+                600,
+                300,
+                75,
+                "Settings",
+                font,
+                image_idle_path="frontend/assets/ui/btn_secondary_idle.png",
+                image_hover_path="frontend/assets/ui/btn_secondary_hover.png",
+                image_pressed_path="frontend/assets/ui/btn_secondary_pressed.png",
+                base_color=YELLOW),
         },
         SCREEN_GAME_OVER: {
             "to_lobby": UIButton(
@@ -523,6 +609,8 @@ def handle_server_message(state, message):
             state["match"] = match
             if state.get("screen") == SCREEN_GAME:
                 play_match_delta_sound_effects(state, previous_match, match)
+                if has_new_cheer_message(previous_match, match):
+                    play_sound_effect(state, "chat")
         return
 
     if message_type == "GAME_OVER":
@@ -638,6 +726,10 @@ def handle_lobby_screen_event(state, event):
     if event.type != pygame.KEYDOWN:
         return
 
+    if event.key == pygame.K_s:
+        open_settings_screen(state)
+        return
+
     users = [name for name in state["online_users"] if name != state["self_name"]]
     matches = state.get("active_matches", [])
 
@@ -701,7 +793,6 @@ def handle_game_screen_event(state, event):
             if message:
                 send_to_server(state, "CHEER", {"text": message})
                 state["chat_input"] = ""
-                play_sound_effect(state, "chat")
             return
         if event.key == pygame.K_BACKSPACE:
             state["chat_input"] = state["chat_input"][:-1]
@@ -713,7 +804,6 @@ def handle_game_screen_event(state, event):
     if event.unicode in {"1", "2", "3", "4", "5"}:
         index = int(event.unicode) - 1
         send_to_server(state, "CHEER", {"text": CHEER_OPTIONS[index]})
-        play_sound_effect(state, "chat")
         return
 
     if event.key == pygame.K_UP:
@@ -781,6 +871,10 @@ def run_button_action(state, action_name):
         send_to_server(state, "WATCH_MATCH", {"match_id": selected_match.get("id")})
         return
 
+    if state["screen"] == SCREEN_LOBBY and action_name == "settings":
+        open_settings_screen(state)
+        return
+
     if state["screen"] == SCREEN_GAME_OVER and action_name == "to_lobby":
         state["screen"] = SCREEN_LOBBY
 
@@ -822,6 +916,8 @@ def handle_event(state, event):
         handle_game_screen_event(state, event)
     elif state["screen"] == SCREEN_GAME_OVER:
         handle_game_over_screen_event(state, event)
+    elif state["screen"] == SCREEN_SETTINGS:
+        handle_settings_screen_event(state, event)
 
     return True
 
@@ -978,6 +1074,7 @@ def draw_lobby_screen(screen, font, big_font, state):
 
     y += 10
     y = draw_text_line(screen, font, "Use buttons or keys (C/A/V)", MENU_HINT_COLOR, LOBBY_TEXT_X, y)
+    y = draw_text_line(screen, font, "Press S for settings", MENU_HINT_COLOR, LOBBY_TEXT_X, y)
     y = draw_text_line(screen, font, "Left/Right select match to watch", MENU_HINT_COLOR, LOBBY_TEXT_X, y)
 
     if state["error_text"]:
@@ -1297,6 +1394,30 @@ def draw_game_over_screen(screen, font, big_font, state):
     draw_screen_buttons(screen, state)
 
 
+#draws the settings screen with selectable music and sfx volume controls.
+def draw_settings_screen(screen, font, big_font, state):
+    draw_menu_background(screen, state)
+    y = MENU_TEXT_Y
+    y = draw_text_line(screen, big_font, "Settings", MENU_TEXT_COLOR, MENU_TEXT_X, y)
+    y += 24
+
+    selected = int(state.get("settings_selected_index", 0))
+    music_percent = int(round(float(state.get("music_volume", MUSIC_VOLUME)) * 100))
+    sfx_percent = int(round(float(state.get("sfx_volume", SFX_VOLUME)) * 100))
+
+    music_prefix = "> " if selected == 0 else "  "
+    sfx_prefix = "> " if selected == 1 else "  "
+    music_color = YELLOW if selected == 0 else WHITE
+    sfx_color = YELLOW if selected == 1 else WHITE
+
+    y = draw_text_line(screen, font, f"{music_prefix}Music Volume: {music_percent}%", music_color, MENU_TEXT_X, y)
+    y = draw_text_line(screen, font, f"{sfx_prefix}SFX Volume: {sfx_percent}%", sfx_color, MENU_TEXT_X, y)
+    y += 12
+    y = draw_text_line(screen, font, "Up/Down: select item", MENU_HINT_COLOR, MENU_TEXT_X, y)
+    y = draw_text_line(screen, font, "Left/Right: adjust volume", MENU_HINT_COLOR, MENU_TEXT_X, y)
+    draw_text_line(screen, font, "Enter or Esc: return", MENU_HINT_COLOR, MENU_TEXT_X, y)
+
+
 #renders the currently active screen.
 def render_screen(screen, font, big_font, small_font, state):
     if state["screen"] == SCREEN_CONNECT:
@@ -1309,6 +1430,8 @@ def render_screen(screen, font, big_font, small_font, state):
         draw_game_screen(screen, font, big_font, small_font, state)
     elif state["screen"] == SCREEN_GAME_OVER:
         draw_game_over_screen(screen, font, big_font, state)
+    elif state["screen"] == SCREEN_SETTINGS:
+        draw_settings_screen(screen, font, big_font, state)
 
 
 #runs the main pygame frontend loop.
