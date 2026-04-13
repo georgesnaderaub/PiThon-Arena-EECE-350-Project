@@ -55,6 +55,14 @@ CHAT_INPUT_BG_PATH = "frontend/assets/ui/chat_input_bg.png"
 GAME_OVER_DRAW_BG_PATH = "frontend/assets/backgrounds/game_over_draw.png"
 GAME_OVER_BLUE_WIN_BG_PATH = "frontend/assets/backgrounds/game_over_blue_wins.png"
 GAME_OVER_GREEN_WIN_BG_PATH = "frontend/assets/backgrounds/game_over_green_wins.png"
+MENU_MUSIC_PATH = "frontend/assets/audio/Tail-Waggin' Tasty.mp3"
+MATCH_MUSIC_PATH = "frontend/assets/audio/TIme Trial.mp3"
+MUSIC_VOLUME = 0.35
+EFFECTS_DIR = "frontend/assets/effects"
+BUTTON_SFX_FALLBACK_PATH = "frontend/assets/effects/button_press.wav"
+PIE_SFX_FALLBACK_PATH = "frontend/assets/effects/collect_pie.wav"
+COLLISION_SFX_FALLBACK_PATH = "frontend/assets/effects/obstacle_collision.wav"
+CHAT_SFX_FALLBACK_PATH = "frontend/assets/effects/chat_received.wav"
 MENU_TEXT_X = 100
 MENU_TEXT_Y = 100
 LOBBY_TEXT_X = 100
@@ -92,7 +100,163 @@ def create_client_state():
         "connection_id": 0,
         "scaled_surface_cache": {},
         "buttons": {},
+        "music_enabled": False,
+        "current_music_track": None,
+        "last_music_screen": None,
+        "sound_effects": {},
     }
+
+
+#initializes pygame mixer when available so background music can play.
+def initialize_music_system(state):
+    mixer = getattr(pygame, "mixer", None)
+    if mixer is None or not hasattr(mixer, "music"):
+        state["music_enabled"] = False
+        return
+
+    if hasattr(mixer, "get_init") and mixer.get_init() is None and hasattr(mixer, "init"):
+        try:
+            mixer.init()
+        except pygame.error:
+            state["music_enabled"] = False
+            return
+
+    state["music_enabled"] = True
+
+
+#returns the target background track for each visible screen.
+def get_music_track_for_screen(screen_name):
+    if screen_name in {SCREEN_CONNECT, SCREEN_USERNAME, SCREEN_LOBBY}:
+        return MENU_MUSIC_PATH
+    if screen_name in {SCREEN_GAME, SCREEN_GAME_OVER}:
+        return MATCH_MUSIC_PATH
+    return None
+
+
+#loads and loops one music track, or stops music when no track is provided.
+def play_background_music_track(state, track_path):
+    if not state.get("music_enabled"):
+        return
+
+    if track_path is None:
+        pygame.mixer.music.stop()
+        state["current_music_track"] = None
+        return
+
+    if state.get("current_music_track") == track_path:
+        return
+
+    if not os.path.exists(track_path):
+        pygame.mixer.music.stop()
+        state["current_music_track"] = None
+        return
+
+    try:
+        pygame.mixer.music.load(track_path)
+        pygame.mixer.music.set_volume(MUSIC_VOLUME)
+        pygame.mixer.music.play(-1)
+    except pygame.error:
+        pygame.mixer.music.stop()
+        state["current_music_track"] = None
+        return
+
+    state["current_music_track"] = track_path
+
+
+#switches background music whenever the active screen changes.
+def update_background_music(state):
+    screen_name = state.get("screen")
+    if state.get("last_music_screen") == screen_name:
+        return
+
+    state["last_music_screen"] = screen_name
+    track_path = get_music_track_for_screen(screen_name)
+    play_background_music_track(state, track_path)
+
+
+#returns one effect path by matching keywords in the effects directory with a fallback path.
+def find_effect_path(effect_keywords, fallback_path):
+    if os.path.isdir(EFFECTS_DIR):
+        candidates = sorted(os.listdir(EFFECTS_DIR))
+        for name in candidates:
+            lowered = name.lower()
+            if not lowered.endswith(".wav"):
+                continue
+            if any(keyword in lowered for keyword in effect_keywords):
+                return os.path.join(EFFECTS_DIR, name)
+    return fallback_path
+
+
+#loads one wav sound effect and returns None when unavailable or unsupported.
+def load_sound_effect(path):
+    if not os.path.exists(path):
+        return None
+    try:
+        return pygame.mixer.Sound(path)
+    except pygame.error:
+        return None
+
+
+#loads all gameplay/ui sound effects into client state.
+def load_sound_effects(state):
+    if not state.get("music_enabled"):
+        state["sound_effects"] = {}
+        return
+
+    button_path = find_effect_path(("button", "click"), BUTTON_SFX_FALLBACK_PATH)
+    pie_path = find_effect_path(("pie", "pickup", "collect"), PIE_SFX_FALLBACK_PATH)
+    collision_path = find_effect_path(("obstacle", "collision", "hit", "crash"), COLLISION_SFX_FALLBACK_PATH)
+    chat_path = find_effect_path(("chat", "message", "send"), CHAT_SFX_FALLBACK_PATH)
+    state["sound_effects"] = {
+        "button": load_sound_effect(button_path),
+        "pie": load_sound_effect(pie_path),
+        "collision": load_sound_effect(collision_path),
+        "chat": load_sound_effect(chat_path),
+    }
+
+
+#plays one previously loaded sound effect by key when available.
+def play_sound_effect(state, effect_key):
+    effect = state.get("sound_effects", {}).get(effect_key)
+    if effect is None:
+        return
+    try:
+        effect.play()
+    except pygame.error:
+        return
+
+
+#returns aggregate pie and collision stun counters from one match snapshot.
+def get_match_sound_counters(match):
+    if not isinstance(match, dict):
+        return {"pie_total": 0, "stun_by_player": {}}
+
+    pie_total = 0
+    stun_by_player = {}
+    for username, snake in match.get("snakes", {}).items():
+        pie_total += int(snake.get("pies_collected", 0))
+        stun_by_player[username] = int(snake.get("stun_ticks_remaining", 0))
+    return {"pie_total": pie_total, "stun_by_player": stun_by_player}
+
+
+#returns true when any snake has a higher stun counter than in the previous snapshot.
+def has_new_collision_stun(previous_stun_by_player, current_stun_by_player):
+    for username, current_stun in current_stun_by_player.items():
+        previous_stun = int(previous_stun_by_player.get(username, 0))
+        if int(current_stun) > previous_stun:
+            return True
+    return False
+
+
+#plays pie/collision effects by comparing previous and current match snapshots.
+def play_match_delta_sound_effects(state, previous_match, current_match):
+    previous = get_match_sound_counters(previous_match)
+    current = get_match_sound_counters(current_match)
+
+    if current["pie_total"] > previous["pie_total"]:
+        play_sound_effect(state, "pie")
+    if has_new_collision_stun(previous["stun_by_player"], current["stun_by_player"]):
+        play_sound_effect(state, "collision")
 
 
 #creates screen-specific button objects used by the frontend UI.
@@ -355,7 +519,10 @@ def handle_server_message(state, message):
     if message_type == "STATE_UPDATE":
         match = payload.get("match")
         if isinstance(match, dict):
+            previous_match = state.get("match")
             state["match"] = match
+            if state.get("screen") == SCREEN_GAME:
+                play_match_delta_sound_effects(state, previous_match, match)
         return
 
     if message_type == "GAME_OVER":
@@ -534,6 +701,7 @@ def handle_game_screen_event(state, event):
             if message:
                 send_to_server(state, "CHEER", {"text": message})
                 state["chat_input"] = ""
+                play_sound_effect(state, "chat")
             return
         if event.key == pygame.K_BACKSPACE:
             state["chat_input"] = state["chat_input"][:-1]
@@ -545,6 +713,7 @@ def handle_game_screen_event(state, event):
     if event.unicode in {"1", "2", "3", "4", "5"}:
         index = int(event.unicode) - 1
         send_to_server(state, "CHEER", {"text": CHEER_OPTIONS[index]})
+        play_sound_effect(state, "chat")
         return
 
     if event.key == pygame.K_UP:
@@ -566,6 +735,7 @@ def handle_game_over_screen_event(state, event):
 
 #shows pressed-state feedback for a screen button action.
 def press_button_feedback(state, action_name):
+    play_sound_effect(state, "button")
     buttons = state["buttons"].get(state["screen"], {})
     button = buttons.get(action_name)
     if button is None:
@@ -626,6 +796,7 @@ def update_screen_buttons(state):
 
     for action_name, button in buttons.items():
         if button.update(mouse_pos, mouse_down):
+            press_button_feedback(state, action_name)
             run_button_action(state, action_name)
 
 
@@ -1154,6 +1325,8 @@ def run_client():
     hud_name_font = pygame.font.SysFont("consolas", 30)
 
     state = create_client_state()
+    initialize_music_system(state)
+    load_sound_effects(state)
     state["menu_background"] = load_menu_background()
     state["game_ui_assets"] = load_game_ui_assets()
     state["hud_name_font"] = hud_name_font
@@ -1165,6 +1338,7 @@ def run_client():
 
         process_network_queue(state)
         update_screen_buttons(state)
+        update_background_music(state)
 
         for event in pygame.event.get():
             running = handle_event(state, event)
@@ -1175,6 +1349,8 @@ def run_client():
         pygame.display.update()
 
     close_connection(state)
+    if state.get("music_enabled"):
+        pygame.mixer.music.stop()
     pygame.quit()
 
 
