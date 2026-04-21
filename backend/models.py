@@ -165,6 +165,8 @@ def create_match(match_id, player_one, player_two, config):
         "obstacles": obstacles,
         "pies": [],
         "cheers": [],
+        "chat_p2p_ports": {},
+        "chat_peer_info_sent": False,
     }
 
     spawn_pie(match, config)

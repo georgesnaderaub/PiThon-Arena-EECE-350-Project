@@ -23,6 +23,7 @@ HEALTH_BAR_WIDTH = 320
 HEALTH_BAR_HEIGHT = 26
 CHAT_PANEL_WIDTH = 320
 CHAT_MAX_VISIBLE = 14
+LOCAL_PRIVATE_CHAT_MAX = 30
 BOARD_BG = (20, 24, 30)
 WHITE = (240, 240, 240)
 BLACK = (0, 0, 0)
@@ -99,6 +100,16 @@ def create_client_state():
         "match": None,
         "is_spectator": False,
         "chat_input": "",
+        "chat_mode": "public",
+        "public_chat_messages": [],
+        "private_chat_messages": [],
+        "p2p_listener_socket": None,
+        "p2p_listener_thread": None,
+        "p2p_socket": None,
+        "p2p_thread": None,
+        "p2p_stop_event": threading.Event(),
+        "p2p_connected": False,
+        "p2p_peer_username": None,
         "game_over": None,
         "connection_id": 0,
         "scaled_surface_cache": {},
@@ -441,6 +452,185 @@ def send_to_server(state, message_type, payload=None):
             state["connected"] = False
 
 
+#queues one local pseudo-network message tagged with the current connection id.
+def enqueue_local_network_message(state, message):
+    state["network_queue"].put({"connection_id": state["connection_id"], "message": message})
+
+
+#safely closes one socket-like object and ignores shutdown/close errors.
+def close_socket_resource(sock):
+    if sock is None:
+        return
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    try:
+        sock.close()
+    except OSError:
+        pass
+
+
+#stores one private chat message locally for in-game rendering.
+def add_private_chat_message(state, sender, text):
+    private_messages = state.setdefault("private_chat_messages", [])
+    private_messages.append({"from": sender, "text": text, "private": True})
+    if len(private_messages) > LOCAL_PRIVATE_CHAT_MAX:
+        state["private_chat_messages"] = private_messages[-LOCAL_PRIVATE_CHAT_MAX:]
+
+
+#reads direct peer chat packets and enqueues decoded chat lines for the main thread.
+def p2p_chat_receiver(state, peer_socket, connection_id):
+    recv_buffer = b""
+    while not state["p2p_stop_event"].is_set():
+        try:
+            chunk = peer_socket.recv(4096)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+
+        if not chunk:
+            break
+
+        recv_buffer += chunk
+        while b"\n" in recv_buffer:
+            line, _, recv_buffer = recv_buffer.partition(b"\n")
+            if not line.strip():
+                continue
+            try:
+                packet = decode_message(line.strip())
+            except Exception:
+                continue
+            if packet.get("type") != "CHAT_MESSAGE":
+                continue
+            payload = packet.get("payload", {})
+            text = payload.get("text", "")
+            sender = payload.get("from", state.get("p2p_peer_username") or "peer")
+            if isinstance(text, str) and text.strip():
+                enqueue_local_network_message(
+                    state,
+                    {"type": "P2P_CHAT", "payload": {"from": sender, "text": text.strip()}},
+                )
+
+    if state.get("connection_id") == connection_id:
+        enqueue_local_network_message(state, {"type": "P2P_CHAT_STATUS", "payload": {"connected": False}})
+
+
+#attaches one established p2p socket to client state and starts its receive thread.
+def attach_p2p_chat_socket(state, peer_socket, connection_id):
+    if state.get("connection_id") != connection_id:
+        close_socket_resource(peer_socket)
+        return
+    if state.get("p2p_socket") is not None:
+        close_socket_resource(peer_socket)
+        return
+
+    peer_socket.settimeout(0.5)
+    state["p2p_socket"] = peer_socket
+    state["p2p_connected"] = True
+    thread = threading.Thread(target=p2p_chat_receiver, args=(state, peer_socket, connection_id), daemon=True)
+    state["p2p_thread"] = thread
+    thread.start()
+    enqueue_local_network_message(state, {"type": "P2P_CHAT_STATUS", "payload": {"connected": True}})
+
+
+#accepts one incoming private chat connection while this match is active.
+def p2p_chat_acceptor(state, listener_socket, connection_id):
+    while not state["p2p_stop_event"].is_set():
+        try:
+            conn, _ = listener_socket.accept()
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        attach_p2p_chat_socket(state, conn, connection_id)
+        if state.get("p2p_socket") is not None:
+            break
+
+
+#stops all p2p chat sockets and threads and clears private connection state.
+def reset_p2p_chat(state):
+    state["p2p_stop_event"].set()
+    close_socket_resource(state.get("p2p_socket"))
+    close_socket_resource(state.get("p2p_listener_socket"))
+    state["p2p_socket"] = None
+    state["p2p_listener_socket"] = None
+    state["p2p_connected"] = False
+    state["p2p_peer_username"] = None
+
+    recv_thread = state.get("p2p_thread")
+    if recv_thread is not None and recv_thread.is_alive() and recv_thread is not threading.current_thread():
+        recv_thread.join(timeout=0.3)
+    state["p2p_thread"] = None
+
+    listener_thread = state.get("p2p_listener_thread")
+    if listener_thread is not None and listener_thread.is_alive() and listener_thread is not threading.current_thread():
+        listener_thread.join(timeout=0.3)
+    state["p2p_listener_thread"] = None
+
+
+#starts one local listener and notifies the server that this player is ready for p2p chat.
+def start_match_p2p_listener(state):
+    if state.get("is_spectator"):
+        return
+
+    reset_p2p_chat(state)
+    state["p2p_stop_event"].clear()
+
+    try:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("0.0.0.0", 0))
+        listener.listen(1)
+        listener.settimeout(0.5)
+    except OSError:
+        state["error_text"] = "Could not start private chat listener"
+        return
+
+    state["p2p_listener_socket"] = listener
+    listen_port = listener.getsockname()[1]
+    connection_id = state["connection_id"]
+    thread = threading.Thread(target=p2p_chat_acceptor, args=(state, listener, connection_id), daemon=True)
+    state["p2p_listener_thread"] = thread
+    thread.start()
+    send_to_server(state, "CHAT_P2P_READY", {"listen_port": listen_port})
+
+
+#tries to connect to the peer endpoint shared by the server for private player chat.
+def connect_to_p2p_peer(state, peer_ip, peer_port):
+    if state.get("p2p_socket") is not None:
+        return
+    peer = None
+    try:
+        port = int(peer_port)
+        peer = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        peer.settimeout(3.0)
+        peer.connect((peer_ip, port))
+    except OSError:
+        close_socket_resource(peer)
+        state["error_text"] = "Private chat peer connection failed"
+        return
+    attach_p2p_chat_socket(state, peer, state["connection_id"])
+
+
+#sends one private quick-chat phrase through the active p2p connection.
+def send_private_quick_chat(state, text):
+    if state.get("p2p_socket") is None:
+        state["error_text"] = "Private chat is not connected yet"
+        return False
+    try:
+        packet = encode_message("CHAT_MESSAGE", {"from": state.get("self_name"), "text": text})
+        state["p2p_socket"].sendall(packet)
+    except OSError:
+        state["error_text"] = "Private chat send failed"
+        reset_p2p_chat(state)
+        return False
+    add_private_chat_message(state, state.get("self_name") or "you", text)
+    play_sound_effect(state, "chat")
+    return True
+
+
 #reads socket data for one specific connection id and enqueues tagged messages.
 def network_listener(state, connection_id):
     sock = state["socket"]
@@ -481,6 +671,7 @@ def network_listener(state, connection_id):
 def connect_to_server(state):
     if state["socket"] is not None:
         close_connection(state)
+    reset_p2p_chat(state)
 
     try:
         port = int(state["server_port"].strip())
@@ -517,6 +708,7 @@ def connect_to_server(state):
 #closes socket resources and stops background network thread.
 def close_connection(state):
     state["stop_event"].set()
+    reset_p2p_chat(state)
 
     if state["socket"] is not None:
         try:
@@ -597,9 +789,16 @@ def handle_server_message(state, message):
             state["match"] = match
             state["is_spectator"] = bool(payload.get("spectator", False))
             state["chat_input"] = ""
+            state["chat_mode"] = "public"
+            state["public_chat_messages"] = list(match.get("cheers", []))
+            state["private_chat_messages"] = []
             state["screen"] = SCREEN_GAME
             state["game_over"] = None
             state["error_text"] = ""
+            if state["is_spectator"]:
+                reset_p2p_chat(state)
+            else:
+                start_match_p2p_listener(state)
         return
 
     if message_type == "STATE_UPDATE":
@@ -607,10 +806,40 @@ def handle_server_message(state, message):
         if isinstance(match, dict):
             previous_match = state.get("match")
             state["match"] = match
+            state["public_chat_messages"] = list(match.get("cheers", []))
             if state.get("screen") == SCREEN_GAME:
                 play_match_delta_sound_effects(state, previous_match, match)
                 if has_new_cheer_message(previous_match, match):
                     play_sound_effect(state, "chat")
+        return
+
+    if message_type == "PRIVATE_CHAT":
+        sender = payload.get("from", "?")
+        text = payload.get("text", "")
+        if isinstance(text, str) and text.strip():
+            add_private_chat_message(state, sender, text.strip())
+            play_sound_effect(state, "chat")
+        return
+
+    if message_type == "CHAT_PEER_INFO":
+        state["p2p_peer_username"] = payload.get("peer_username")
+        peer_ip = payload.get("peer_ip")
+        peer_port = payload.get("peer_port")
+        connect_flag = bool(payload.get("connect"))
+        if connect_flag and isinstance(peer_ip, str):
+            connect_to_p2p_peer(state, peer_ip, peer_port)
+        return
+
+    if message_type == "P2P_CHAT":
+        sender = payload.get("from", state.get("p2p_peer_username") or "peer")
+        text = payload.get("text", "")
+        if isinstance(text, str) and text.strip():
+            add_private_chat_message(state, sender, text.strip())
+            play_sound_effect(state, "chat")
+        return
+
+    if message_type == "P2P_CHAT_STATUS":
+        state["p2p_connected"] = bool(payload.get("connected"))
         return
 
     if message_type == "GAME_OVER":
@@ -622,7 +851,9 @@ def handle_server_message(state, message):
         match = payload.get("match")
         if isinstance(match, dict):
             state["match"] = match
+            state["public_chat_messages"] = list(match.get("cheers", []))
         state["screen"] = SCREEN_GAME_OVER
+        reset_p2p_chat(state)
         return
 
     if message_type == "ERROR":
@@ -785,6 +1016,7 @@ def handle_game_screen_event(state, event):
     if event.key == pygame.K_ESCAPE:
         state["screen"] = SCREEN_LOBBY
         state["chat_input"] = ""
+        reset_p2p_chat(state)
         return
 
     if state["is_spectator"]:
@@ -801,9 +1033,17 @@ def handle_game_screen_event(state, event):
             state["chat_input"] += event.unicode
         return
 
+    if event.key == pygame.K_p:
+        state["chat_mode"] = "private" if state.get("chat_mode") == "public" else "public"
+        return
+
     if event.unicode in {"1", "2", "3", "4", "5"}:
         index = int(event.unicode) - 1
-        send_to_server(state, "CHEER", {"text": CHEER_OPTIONS[index]})
+        phrase = CHEER_OPTIONS[index]
+        if state.get("chat_mode") == "private":
+            send_private_quick_chat(state, phrase)
+        else:
+            send_to_server(state, "CHEER", {"text": phrase, "visibility": "public"})
         return
 
     if event.key == pygame.K_UP:
@@ -1163,15 +1403,18 @@ def draw_chat_panel(screen, match, state, small_font):
     text_y = panel_y + 12
     text_y = draw_text_line(screen, small_font, "Match Chat", WHITE, panel_x + 12, text_y)
 
-    cheers = match.get("cheers", [])
-    visible = cheers[-CHAT_MAX_VISIBLE:]
+    cheers = list(state.get("public_chat_messages", match.get("cheers", [])))
+    private_messages = list(state.get("private_chat_messages", []))
+    visible = (cheers + private_messages)[-CHAT_MAX_VISIBLE:]
     if not visible:
         text_y = draw_text_line(screen, small_font, "No messages yet", GRAY, panel_x + 12, text_y + 4)
     else:
         for item in visible:
             sender = item.get("from", "?")
             text = item.get("text", "")
-            text_y = draw_text_line(screen, small_font, f"{sender}: {text}", WHITE, panel_x + 12, text_y + 2)
+            prefix = "[P] " if item.get("private") else ""
+            color = MENU_HINT_COLOR if item.get("private") else WHITE
+            text_y = draw_text_line(screen, small_font, f"{prefix}{sender}: {text}", color, panel_x + 12, text_y + 2)
 
     if state["is_spectator"]:
         draw_text_line(screen, small_font, "Spectator Chat:", YELLOW, panel_x + 12, panel_y + panel_h - 88)
@@ -1187,7 +1430,14 @@ def draw_chat_panel(screen, match, state, small_font):
         typed_surface = small_font.render(f"> {typed}", True, WHITE)
         screen.blit(typed_surface, (input_rect.x + 6, input_rect.y + 4))
     else:
-        opt_y = panel_y + panel_h - 160
+        opt_y = panel_y + panel_h - 182
+        mode_label = "P2P Private" if state.get("chat_mode") == "private" else "Public Server"
+        mode_color = GREEN if state.get("chat_mode") == "private" and state.get("p2p_connected") else YELLOW
+        if state.get("chat_mode") == "private" and not state.get("p2p_connected"):
+            mode_color = RED
+        draw_text_line(screen, small_font, f"Mode: {mode_label}", mode_color, panel_x + 12, opt_y)
+        draw_text_line(screen, small_font, "P: toggle mode", MENU_HINT_COLOR, panel_x + 12, opt_y + 24)
+        opt_y += 48
         draw_text_line(screen, small_font, "Quick Chat (1-5):", YELLOW, panel_x + 12, opt_y)
         for index, phrase in enumerate(CHEER_OPTIONS, start=1):
             opt_y += 26
@@ -1223,6 +1473,15 @@ def draw_pie_descriptions(screen, font, start_x, start_y):
         x += 18 + text_surface.get_width() + 18
 
 
+#returns each player's base snake color mapping based on render order in match state.
+def get_player_snake_colors(match):
+    colors = {}
+    snake_items = list(match.get("snakes", {}).items())
+    for index, (username, _) in enumerate(snake_items):
+        colors[username] = GREEN if index == 0 else BLUE
+    return colors
+
+
 #draws the active game board from server-authoritative match state.
 def draw_game_board(screen, state, font, small_font):
     match = state["match"]
@@ -1255,6 +1514,7 @@ def draw_game_board(screen, state, font, small_font):
         pygame.draw.circle(screen, pie_color, (px, py), radius)
 
     snake_items = list(match.get("snakes", {}).items())
+    snake_name_colors = get_player_snake_colors(match)
     for index, (username, snake) in enumerate(snake_items):
         color = GREEN if index == 0 else BLUE
         is_flickering = snake.get("stun_ticks_remaining", 0) > 0 and match.get("tick", 0) % 2 == 0
@@ -1280,9 +1540,11 @@ def draw_game_board(screen, state, font, small_font):
 
         left_x = geo["x"]
         right_x = geo["x"] + geo["pixel_width"] - HEALTH_BAR_WIDTH
-        top_y = GRID_MARGIN - 5
-        draw_corner_health_bar(screen, small_font, state["hud_name_font"], BLUE, state, left_x, top_y, left_player, left_health)
-        draw_corner_health_bar(screen, small_font, state["hud_name_font"], ORANGE, state, right_x, top_y, right_player, right_health)
+        top_y = 0
+        left_name_color = snake_name_colors.get(left_player, BLUE)
+        right_name_color = snake_name_colors.get(right_player, ORANGE)
+        draw_corner_health_bar(screen, small_font, state["hud_name_font"], left_name_color, state, left_x, top_y, left_player, left_health)
+        draw_corner_health_bar(screen, small_font, state["hud_name_font"], right_name_color, state, right_x, top_y, right_player, right_health)
 
     time_seconds = int(match.get("remaining_seconds", 0))
     time_text = f"Time Left: {time_seconds}s"
@@ -1301,7 +1563,8 @@ def draw_game_board(screen, state, font, small_font):
         draw_text_line(screen, small_font, "Mode: Spectator", YELLOW, controls_x, controls_y)
     else:
         draw_text_line(screen, small_font, "Arrows: move snake", WHITE, controls_x, controls_y)
-    draw_text_line(screen, small_font, "Esc: back to lobby", WHITE, controls_x, controls_y + 24)
+        draw_text_line(screen, small_font, "P: toggle quick chat mode", MENU_HINT_COLOR, controls_x, controls_y + 24)
+    draw_text_line(screen, small_font, "Esc: back to lobby", WHITE, controls_x, controls_y + 48)
 
 
 #draws the game screen including board and contextual status text.

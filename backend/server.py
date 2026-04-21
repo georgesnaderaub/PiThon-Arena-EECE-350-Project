@@ -123,6 +123,11 @@ def build_match_state_payload(match):
     }
 
 
+#returns true when one requested chat visibility mode is supported.
+def is_valid_chat_visibility(visibility):
+    return visibility in {"public", "private"}
+
+
 #returns unique recipients for match broadcasts with players prioritized over spectators.
 def get_match_recipients(match):
     with STATE_LOCK:
@@ -858,8 +863,17 @@ def handle_watch_match(session, payload):
 def handle_cheer(session, payload):
     username = session["username"]
     text = payload.get("text")
+    visibility = payload.get("visibility", "public")
     if not isinstance(text, str):
         send_message(session["socket"], "ERROR", {"reason": "text is required"})
+        return
+    if not isinstance(visibility, str):
+        send_message(session["socket"], "ERROR", {"reason": "visibility must be public or private"})
+        return
+
+    visibility = visibility.strip().lower()
+    if not is_valid_chat_visibility(visibility):
+        send_message(session["socket"], "ERROR", {"reason": "visibility must be public or private"})
         return
 
     cleaned = text.strip()
@@ -880,9 +894,75 @@ def handle_cheer(session, payload):
             send_message(session["socket"], "ERROR", {"reason": "User is not online"})
             return
 
-        match["cheers"].append({"from": username, "text": cleaned})
-        if len(match["cheers"]) > MAX_CHEER_MESSAGES:
-            match["cheers"] = match["cheers"][-MAX_CHEER_MESSAGES:]
+        if visibility == "private":
+            if username not in match["players"]:
+                send_message(session["socket"], "ERROR", {"reason": "Only active players can send private chat"})
+                return
+            recipients = list(match["players"])
+        else:
+            recipients = []
+
+        if visibility == "public":
+            match["cheers"].append({"from": username, "text": cleaned})
+            if len(match["cheers"]) > MAX_CHEER_MESSAGES:
+                match["cheers"] = match["cheers"][-MAX_CHEER_MESSAGES:]
+
+    if visibility == "private":
+        send_to_users(recipients, "PRIVATE_CHAT", {"from": username, "text": cleaned})
+
+
+#shares each player's direct chat endpoint once both active players are ready.
+def handle_chat_p2p_ready(session, payload):
+    username = session["username"]
+    listen_port = payload.get("listen_port")
+    if not isinstance(listen_port, int) or not (1 <= listen_port <= 65535):
+        send_message(session["socket"], "ERROR", {"reason": "listen_port must be an integer between 1 and 65535"})
+        return
+
+    with STATE_LOCK:
+        match = STATE["active_match"]
+        if match is None or match["status"] != "running":
+            send_message(session["socket"], "ERROR", {"reason": "No active running match"})
+            return
+        if username not in match["players"]:
+            send_message(session["socket"], "ERROR", {"reason": "Only active players can enable private chat"})
+            return
+        match["chat_p2p_ports"][username] = listen_port
+
+        if match.get("chat_peer_info_sent"):
+            return
+        players = list(match["players"])
+        if len(players) != 2:
+            return
+        if players[0] not in match["chat_p2p_ports"] or players[1] not in match["chat_p2p_ports"]:
+            return
+        if players[0] not in STATE["online_users"] or players[1] not in STATE["online_users"]:
+            return
+
+        session_one = STATE["online_users"][players[0]]
+        session_two = STATE["online_users"][players[1]]
+        payload_one = {
+            "peer_username": players[1],
+            "peer_ip": session_two["address"][0],
+            "peer_port": match["chat_p2p_ports"][players[1]],
+            "connect": True,
+        }
+        payload_two = {
+            "peer_username": players[0],
+            "peer_ip": session_one["address"][0],
+            "peer_port": match["chat_p2p_ports"][players[0]],
+            "connect": False,
+        }
+        match["chat_peer_info_sent"] = True
+
+    try:
+        send_message(session_one["socket"], "CHAT_PEER_INFO", payload_one)
+    except OSError:
+        pass
+    try:
+        send_message(session_two["socket"], "CHAT_PEER_INFO", payload_two)
+    except OSError:
+        pass
 
 
 #routes each message type to its backend handler.
@@ -921,6 +1001,10 @@ def dispatch_message(session, message):
 
     if message_type == "CHEER":
         handle_cheer(session, payload)
+        return
+
+    if message_type == "CHAT_P2P_READY":
+        handle_chat_p2p_ready(session, payload)
         return
 
     send_message(session["socket"], "ERROR", {"reason": f"Unsupported message type '{message_type}'"})
