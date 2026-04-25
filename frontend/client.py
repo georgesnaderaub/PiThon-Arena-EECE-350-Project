@@ -617,13 +617,13 @@ def connect_to_p2p_peer(state, peer_ip, peer_port):
 #sends one private quick-chat phrase through the active p2p connection.
 def send_private_quick_chat(state, text):
     if state.get("p2p_socket") is None:
-        state["error_text"] = "Private chat is not connected yet"
-        return False
+        send_to_server(state, "CHEER", {"text": text, "visibility": "private"})
+        return True
     try:
         packet = encode_message("CHAT_MESSAGE", {"from": state.get("self_name"), "text": text})
         state["p2p_socket"].sendall(packet)
     except OSError:
-        state["error_text"] = "Private chat send failed"
+        state["error_text"] = "Private direct chat disconnected. Future private messages will use relay."
         reset_p2p_chat(state)
         return False
     add_private_chat_message(state, state.get("self_name") or "you", text)
@@ -1431,10 +1431,16 @@ def draw_chat_panel(screen, match, state, small_font):
         screen.blit(typed_surface, (input_rect.x + 6, input_rect.y + 4))
     else:
         opt_y = panel_y + panel_h - 182
-        mode_label = "P2P Private" if state.get("chat_mode") == "private" else "Public Server"
-        mode_color = GREEN if state.get("chat_mode") == "private" and state.get("p2p_connected") else YELLOW
-        if state.get("chat_mode") == "private" and not state.get("p2p_connected"):
-            mode_color = RED
+        if state.get("chat_mode") == "private":
+            if state.get("p2p_connected"):
+                mode_label = "Private Direct"
+                mode_color = GREEN
+            else:
+                mode_label = "Private Relay"
+                mode_color = YELLOW
+        else:
+            mode_label = "Public Server"
+            mode_color = YELLOW
         draw_text_line(screen, small_font, f"Mode: {mode_label}", mode_color, panel_x + 12, opt_y)
         draw_text_line(screen, small_font, "P: toggle mode", MENU_HINT_COLOR, panel_x + 12, opt_y + 24)
         opt_y += 48
