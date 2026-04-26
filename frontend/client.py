@@ -47,7 +47,7 @@ SCREEN_SETTINGS = "SETTINGS"
 
 BUTTON_WIDTH = 260
 BUTTON_HEIGHT = 56
-CHEER_OPTIONS = ["gg", "go blue", "go green", "ya sayi2", "mal3abak"]
+CHEER_OPTIONS = ["gg", "go blue", "go green"]
 MENU_BACKGROUND_PATH = "frontend/assets/backgrounds/menu_background.png"
 ARENA_FRAME_BG_PATH = "frontend/assets/arena/arena_frame_bg.png"
 ARENA_FLOOR_PATH = "frontend/assets/arena/arena_floor.png"
@@ -343,6 +343,11 @@ def has_new_cheer_message(previous_match, current_match):
     if len(current_cheers) == len(previous_cheers) and current_cheers != previous_cheers:
         return True
     return False
+
+
+#returns the digit keys currently mapped to quick-chat phrases.
+def get_quick_chat_keys():
+    return {str(index) for index in range(1, len(CHEER_OPTIONS) + 1)}
 
 
 #creates screen-specific button objects used by the frontend UI.
@@ -1037,7 +1042,7 @@ def handle_game_screen_event(state, event):
         state["chat_mode"] = "private" if state.get("chat_mode") == "public" else "public"
         return
 
-    if event.unicode in {"1", "2", "3", "4", "5"}:
+    if event.unicode in get_quick_chat_keys():
         index = int(event.unicode) - 1
         phrase = CHEER_OPTIONS[index]
         if state.get("chat_mode") == "private":
@@ -1444,7 +1449,8 @@ def draw_chat_panel(screen, match, state, small_font):
         draw_text_line(screen, small_font, f"Mode: {mode_label}", mode_color, panel_x + 12, opt_y)
         draw_text_line(screen, small_font, "P: toggle mode", MENU_HINT_COLOR, panel_x + 12, opt_y + 24)
         opt_y += 48
-        draw_text_line(screen, small_font, "Quick Chat (1-5):", YELLOW, panel_x + 12, opt_y)
+        quick_chat_label = f"Quick Chat (1-{len(CHEER_OPTIONS)}):"
+        draw_text_line(screen, small_font, quick_chat_label, YELLOW, panel_x + 12, opt_y)
         for index, phrase in enumerate(CHEER_OPTIONS, start=1):
             opt_y += 26
             draw_text_line(screen, small_font, f"{index}. {phrase}", GRAY, panel_x + 12, opt_y)
